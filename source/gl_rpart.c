@@ -397,6 +397,7 @@ static byte *ColorForParticle (part_type_t type)
 }
 
 #define	INIT_NEW_PARTICLE(_pt, _p, _color, _size, _time)	\
+	if (!free_particles) break;	/* pool exhausted: stop, don't deref NULL & corrupt the free list */	\
 	_p = free_particles;			\
 	free_particles = _p->next;				\
 	_p->next = _pt->start;					\
@@ -1569,6 +1570,19 @@ void QMB_ClearParticles (void)
 		particle_types[i].start = NULL;
 }
 
+// QMB shares the particle pool with the classic system (r_part.c). When the classic
+// R_ClearParticles rebuilds the shared free list on map load it doesn't know about
+// QMB's per-type lists, leaving them pointing at now-free nodes (double-owned -> garbage
+// drawn). R_ClearParticles calls this so QMB releases its lists at the same time.
+void QMB_ResetParticleLists (void)
+{
+	int i;
+	if (!qmb_initialized)
+		return;
+	for (i=0 ; i<num_particletypes ; i++)
+		particle_types[i].start = NULL;
+}
+
 qboolean OnChange_gl_particle_count (cvar_t *var, char *string)
 {
 	float	f;
@@ -1873,19 +1887,16 @@ inline static void QMB_UpdateParticles(void)
 	}
 }
 
-// naievil -- hacky particle drawing...NOT OPTIMIZED
+// Emits one camera-facing quad into an already-active glBegin(GL_QUADS). State and
+// glBegin/glEnd are set up once per particle type by the caller, so a whole type batches
+// into a single draw instead of a glBegin/glEnd + 6 state changes per particle.
 void DRAW_PARTICLE_BILLBOARD(particle_texture_t *ptex, particle_t *p, vec3_t *coord) {
     float            scale;
     vec3_t            up, right, p_downleft, p_upleft, p_downright, p_upright;
-    GLubyte            color[4], *c;
+    GLubyte            color[4];
 
     VectorScale (vup, 1.5, up);
     VectorScale (vright, 1.5, right);
-
-    glEnable (GL_BLEND);
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    glDepthMask (GL_FALSE);
-    glBegin (GL_QUADS);
 
     scale = p->size;
     color[0] = p->color[0];
@@ -1915,19 +1926,150 @@ void DRAW_PARTICLE_BILLBOARD(particle_texture_t *ptex, particle_t *p, vec3_t *co
     glTexCoord2f(subTexLeft, subTexBottom);
     VectorMA (p_downleft, scale, right, p_downright);
     glVertex3fv (p_downright);
-
-    glEnd ();
-
-
-    glDepthMask (GL_TRUE);
-    glDisable (GL_BLEND);
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-    glColor3f(1,1,1);
 }
 
                           
 	
     
+
+#define MAX_LAVA_EMIT 1024
+static msurface_t *lava_surf[MAX_LAVA_EMIT];
+static int	lava_emit_count;
+static qmodel_t	*lava_emit_model;
+
+static void R_BuildLavaEmit (void)
+{
+	extern int q_strcasecmp (const char *s1, const char *s2);
+	int i;
+	lava_emit_count = 0;
+	lava_emit_model = cl.worldmodel;
+	if (!cl.worldmodel)
+		return;
+	for (i = 0; i < cl.worldmodel->numsurfaces && lava_emit_count < MAX_LAVA_EMIT; i++)
+	{
+		msurface_t *s = &cl.worldmodel->surfaces[i];
+		if (!s->texinfo || !s->texinfo->texture || !s->polys)
+			continue;
+		if (q_strcasecmp (s->texinfo->texture->name, "wall_br_red") != 0)
+			continue;
+		lava_surf[lava_emit_count++] = s;
+	}
+}
+
+// random point strictly inside one of the lava surface's fan triangles
+static void R_LavaRandPoint (msurface_t *s, vec3_t out)
+{
+	glpoly_t *p = s->polys;
+	int n = p->numverts;
+	float *va, *vb, *vc, r1, r2;
+	int t;
+	if (n < 3) { VectorCopy (p->verts[0], out); return; }
+	t = rand() % (n - 2);
+	va = p->verts[0];
+	vb = p->verts[t + 1];
+	vc = p->verts[t + 2];
+	r1 = (rand() & 1023) / 1023.0f;
+	r2 = (rand() & 1023) / 1023.0f;
+	if (r1 + r2 > 1.0f) { r1 = 1.0f - r1; r2 = 1.0f - r2; }
+	out[0] = va[0] + r1*(vb[0]-va[0]) + r2*(vc[0]-va[0]);
+	out[1] = va[1] + r1*(vb[1]-va[1]) + r2*(vc[1]-va[1]);
+	out[2] = va[2] + r1*(vb[2]-va[2]) + r2*(vc[2]-va[2]);
+}
+
+qboolean R_PointOnLava (vec3_t p)
+{
+	int i, t;
+	for (i = 0; i < lava_emit_count; i++)
+	{
+		glpoly_t *poly = lava_surf[i]->polys;
+		int n = poly->numverts;
+		float dz = p[2] - poly->verts[0][2];
+		if (dz < 4.0f || dz > 56.0f)
+			continue;
+		for (t = 0; t < n - 2; t++)
+		{
+			float *a = poly->verts[0], *b = poly->verts[t+1], *c = poly->verts[t+2];
+			float d1 = (p[0]-b[0])*(a[1]-b[1]) - (a[0]-b[0])*(p[1]-b[1]);
+			float d2 = (p[0]-c[0])*(b[1]-c[1]) - (b[0]-c[0])*(p[1]-c[1]);
+			float d3 = (p[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(p[1]-a[1]);
+			qboolean neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+			qboolean pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+			if (!(neg && pos))
+				return true;
+		}
+	}
+	return false;
+}
+
+void R_LavaEmbers (void)
+{
+	static double last_em, last_spurt, spurt_gap;
+	int k;
+	if (!qmb_initialized || !cl.worldmodel)
+		return;
+	if (!strstr (cl.worldmodel->name, "town")) { lava_emit_model = NULL; return; }
+	if (lava_emit_model != cl.worldmodel)
+	{
+		R_BuildLavaEmit ();
+		last_em = last_spurt = spurt_gap = 0;
+	}
+	if (cl.time < last_em) { last_em = 0; last_spurt = 0; }
+	if (lava_emit_count == 0 || cl.paused)
+		return;
+
+	if (cl.time - last_em >= 0.015)
+	{
+		last_em = cl.time;
+		for (k = 0; k < 14; k++)
+		{
+			vec3_t org, dir, d;
+			col_t col;
+			R_LavaRandPoint (lava_surf[rand() % lava_emit_count], org);
+			VectorSubtract (org, r_refdef.vieworg, d);
+			if (DotProduct (d, d) > 1100.0f * 1100.0f)
+				continue;
+			org[2] += 2;
+			dir[0] = (rand() % 24) - 12;
+			dir[1] = (rand() % 24) - 12;
+			dir[2] = 35 + (rand() % 60);
+			col[0] = 255; col[1] = 110 + (rand() % 90); col[2] = 20; col[3] = 255;
+			AddParticle (p_glow, org, 1, 1.0f + (rand() % 12) * 0.1f, 0.9f + (rand() % 12) * 0.1f, col, dir);
+
+			if ((rand() & 3) == 0)
+			{
+				vec3_t fdir;
+				col_t fc;
+				fdir[0] = (rand() % 10) - 5; fdir[1] = (rand() % 10) - 5; fdir[2] = 12 + (rand() % 20);
+				fc[0] = 255; fc[1] = 150 + (rand() % 70); fc[2] = 30; fc[3] = 255;
+				AddParticle (p_glow, org, 1, 3.5f + (rand() % 20) * 0.1f, 0.6f + (rand() % 8) * 0.1f, fc, fdir);
+			}
+		}
+	}
+
+	if (cl.time - last_spurt >= spurt_gap)
+	{
+		last_spurt = cl.time;
+		spurt_gap = 1.0 + (rand() % 250) * 0.01;
+		for (k = 0; k < 10; k++)
+		{
+			vec3_t org, d;
+			int n;
+			R_LavaRandPoint (lava_surf[rand() % lava_emit_count], org);
+			VectorSubtract (org, r_refdef.vieworg, d);
+			if (DotProduct (d, d) > 900.0f * 900.0f)
+				continue;
+			for (n = 0; n < 22; n++)
+			{
+				vec3_t dir;
+				col_t col;
+				dir[0] = (rand() % 70) - 35; dir[1] = (rand() % 70) - 35; dir[2] = 130 + (rand() % 170);
+				col[0] = 255; col[1] = 120 + (rand() % 80); col[2] = 25; col[3] = 255;
+				AddParticle (p_glow, org, 1, 1.4f + (rand() % 16) * 0.1f, 1.1f + (rand() % 16) * 0.1f, col, dir);
+			}
+			break;
+		}
+	}
+}
 
 void QMB_DrawParticles (void)
 {
@@ -1944,6 +2086,8 @@ void QMB_DrawParticles (void)
 		return;
 
 	particle_time = cl.time;
+
+	R_LavaEmbers ();
 
 	if (!cl.paused) {
 		QMB_UpdateParticles ();
@@ -2115,8 +2259,18 @@ void QMB_DrawParticles (void)
 				break;
 		*/
 		case pd_billboard:
+		{
+			qboolean muzzle;
 			ptex = &particle_textures[pt->texture];
-			GL_Bind (ptex->gltexture);			
+			GL_Bind (ptex->gltexture);
+			muzzle = (pt->texture == ptex_muzzleflash || pt->texture == ptex_muzzleflash2 || pt->texture == ptex_muzzleflash3);
+
+			// batch the whole type: state once + one glBegin/glEnd, not per particle
+			glEnable (GL_BLEND);
+			glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+			glDepthMask (GL_FALSE);
+			if (muzzle) glDepthRange (0, 0.3);
+			glBegin (GL_QUADS);
 
 			for (p = pt->start ; p ; p = p->next)
 			{
@@ -2133,19 +2287,25 @@ void QMB_DrawParticles (void)
 					}
 				}
 
-				if (pt->texture == ptex_muzzleflash || pt->texture == ptex_muzzleflash2 || pt->texture == ptex_muzzleflash3)
-					glDepthRange (0, 0.3);
-				
 				DRAW_PARTICLE_BILLBOARD(ptex, p, billboard);
-
-				if (pt->texture == ptex_muzzleflash || pt->texture == ptex_muzzleflash2 || pt->texture == ptex_muzzleflash3)
-					glDepthRange (0, 1);
 			}
+
+			glEnd ();
+			if (muzzle) glDepthRange (0, 1);
+			glDepthMask (GL_TRUE);
+			glDisable (GL_BLEND);
+			glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+			glColor3f (1, 1, 1);
 			break;
+		}
 
 		case pd_billboard_vel:
 			ptex = &particle_textures[pt->texture];
 			GL_Bind (ptex->gltexture);
+			glEnable (GL_BLEND);
+			glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+			glDepthMask (GL_FALSE);
+			glBegin (GL_QUADS);
 			for (p = pt->start ; p ; p = p->next)
 			{
 				if (particle_time < p->start || particle_time >= p->die)
@@ -2162,6 +2322,11 @@ void QMB_DrawParticles (void)
 				VectorNegate (velcoord[3], velcoord[1]);
 				DRAW_PARTICLE_BILLBOARD(ptex, p, velcoord);
 			}
+			glEnd ();
+			glDepthMask (GL_TRUE);
+			glDisable (GL_BLEND);
+			glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+			glColor3f (1, 1, 1);
 			break;
 			/*
 		case pd_q3flame:

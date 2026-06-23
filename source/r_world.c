@@ -445,7 +445,7 @@ Writes out the triangle indices needed to draw s as a triangle list.
 The number of indices it will write is given by R_NumTriangleIndicesForSurf.
 ================
 */
-static void R_TriangleIndicesForSurf (msurface_t *s, unsigned short *dest)
+static void R_TriangleIndicesForSurf (msurface_t *s, unsigned int *dest)
 {
 	int i;
 	for (i=2; i<s->numedges; i++)
@@ -458,7 +458,7 @@ static void R_TriangleIndicesForSurf (msurface_t *s, unsigned short *dest)
 
 #define MAX_BATCH_SIZE 4096
 
-static unsigned short vbo_indices[MAX_BATCH_SIZE];
+static unsigned int vbo_indices[MAX_BATCH_SIZE];
 static unsigned int num_vbo_indices;
 
 /*
@@ -482,7 +482,7 @@ static void R_FlushBatch ()
 {
 	if (num_vbo_indices > 0)
 	{
-		glDrawElements (GL_TRIANGLES, num_vbo_indices, GL_UNSIGNED_SHORT, vbo_indices);
+		glDrawElements (GL_TRIANGLES, num_vbo_indices, GL_UNSIGNED_INT, vbo_indices);
 		num_vbo_indices = 0;
 	}
 }
@@ -820,16 +820,22 @@ static GLuint useOverbrightLoc;
 static GLuint useAlphaTestLoc;
 static GLuint alphaLoc;
 static GLuint grayscale_enableLoc;
-#ifdef VITA
 static GLuint fogDensityLoc;
 static GLuint fogRedLoc;
 static GLuint fogGreenLoc;
 static GLuint fogBlueLoc;
-#endif
+static GLuint lightning_flashLoc;
+static GLuint r_originLoc;
+static GLuint weather_puddlesLoc;
+static GLuint is_groundLoc;
+static GLuint is_lavaLoc;
+static GLuint world_ambientLoc;
+static GLuint lava_timeLoc;
 
 #define vertAttrIndex 0
 #define texCoordsAttrIndex 1
 #define LMCoordsAttrIndex 2
+#define weatherPuddleAttrIndex 3
 
 /*
 =============
@@ -841,7 +847,8 @@ void GLWorld_CreateShaders (void)
 	const glsl_attrib_binding_t bindings[] = {
 		{ "Vert", vertAttrIndex },
 		{ "TexCoords", texCoordsAttrIndex },
-		{ "LMCoords", LMCoordsAttrIndex }
+		{ "LMCoords", LMCoordsAttrIndex },
+		{ "a_weather_puddle", weatherPuddleAttrIndex }
 	};
 #ifdef VITA
 	const GLchar *vertSource = \
@@ -908,19 +915,28 @@ void GLWorld_CreateShaders (void)
 		"attribute vec3 Vert;\n"
 		"attribute vec2 TexCoords;\n"
 		"attribute vec2 LMCoords;\n"
+		"attribute float a_weather_puddle;\n"
 		"\n"
+		"varying vec2 tc;\n"
+		"varying vec2 lm;\n"
 		"varying float FogFragCoord;\n"
+		"varying vec3 v_world_pos;\n"
+		"varying float v_weather_puddle;\n"
 		"\n"
 		"void main()\n"
 		"{\n"
-		"	gl_TexCoord[0] = vec4(TexCoords, 0.0, 0.0);\n"
-		"	gl_TexCoord[1] = vec4(LMCoords, 0.0, 0.0);\n"
 		"	gl_Position = gl_ModelViewProjectionMatrix * vec4(Vert, 1.0);\n"
-		"	FogFragCoord = gl_Position.w;\n"
+		"	tc = TexCoords;\n"
+		"	lm = LMCoords;\n"
+		"	vec4 eye_pos = gl_ModelViewMatrix * vec4(Vert, 1.0);\n"
+		"	FogFragCoord = -eye_pos.z;\n"
+		"	v_world_pos = Vert;\n"
+		"	v_weather_puddle = a_weather_puddle;\n"
 		"}\n";
-	
+
 	const GLchar *fragSource = \
 		"#version 110\n"
+		"#extension GL_OES_standard_derivatives : enable\n"
 		"\n"
 		"uniform sampler2D Tex;\n"
 		"uniform sampler2D LMTex;\n"
@@ -930,31 +946,103 @@ void GLWorld_CreateShaders (void)
 		"uniform bool UseAlphaTest;\n"
 		"uniform float Alpha;\n"
 		"uniform bool gs_mod;\n"
-
+		"uniform float fog_density;\n"
+		"uniform float fog_red;\n"
+		"uniform float fog_green;\n"
+		"uniform float fog_blue;\n"
+		"uniform float weather_puddles;\n"
+		"uniform float lightning_flash;\n"
+		"uniform vec3 r_origin;\n"
+		"uniform float is_ground;\n"
+		"uniform float is_lava;\n"
+		"uniform float world_ambient;\n"
+		"uniform float lava_time;\n"
 		"\n"
+		"varying vec2 tc;\n"
+		"varying vec2 lm;\n"
 		"varying float FogFragCoord;\n"
+		"varying vec3 v_world_pos;\n"
+		"varying float v_weather_puddle;\n"
+		"\n"
+		"float hash(vec2 p) {\n"
+		"    p = fract(p * vec2(123.34, 456.21));\n"
+		"    p += dot(p, p + 45.32);\n"
+		"    return fract(p.x * p.y);\n"
+		"}\n"
+		"float noise(vec2 p) {\n"
+		"    vec2 i = floor(p);\n"
+		"    vec2 f = fract(p);\n"
+		"    vec2 u = f * f * (3.0 - 2.0 * f);\n"
+		"    return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),\n"
+		"               mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);\n"
+		"}\n"
+		"float puddleNoise(vec2 p) {\n"
+		"    return noise(p * 0.007) * 0.55 + noise(p * 0.02) * 0.3 + noise(p * 0.06) * 0.15;\n"
+		"}\n"
 		"\n"
 		"void main()\n"
 		"{\n"
-		"	vec4 result = texture2D(Tex, gl_TexCoord[0].xy);\n"
+		"	vec4 result = texture2D(Tex, tc);\n"
 		"	if (UseAlphaTest && (result.a < 0.666))\n"
 		"		discard;\n"
-		"	result *= texture2D(LMTex, gl_TexCoord[1].xy);\n"
-		"	if (UseOverbright)\n"
-		"		result.rgb *= 2.0;\n"
+		"	if (is_lava > 0.5) {\n"
+		"		float t = lava_time;\n"
+		"		vec2 wp = v_world_pos.xy;\n"
+		"		float f1 = sin(t*0.5 + wp.x*0.15)*0.5+0.5;\n"
+		"		float f2 = sin(t*0.33 - wp.y*0.12 + 1.3)*0.5+0.5;\n"
+		"		float f3 = sin(t*0.7 + (wp.x*0.21 + wp.y*0.17))*0.5+0.5;\n"
+		"		float flick = 0.85 + 0.15*(f1*0.4 + f2*0.3 + f3*0.3);\n"
+		"		result.rgb = result.rgb * vec3(7.0, 4.0, 2.0) * flick;\n"
+		"		result.rgb += vec3(0.5, 0.3, 0.08) * pow(f1*f3, 4.0);\n"
+		"	} else {\n"
+		"		result *= texture2D(LMTex, lm);\n"
+		"		if (UseOverbright)\n"
+		"			result.rgb *= 2.0;\n"
+		"		result.rgb *= world_ambient;\n"
+		"	}\n"
 		"	if (UseFullbrightTex)\n"
-		"		result += texture2D(FullbrightTex, gl_TexCoord[0].xy);\n"
+		"		result += texture2D(FullbrightTex, tc);\n"
 		"	result = clamp(result, 0.0, 1.0);\n"
-		"	float fog = exp(-gl_Fog.density * gl_Fog.density * FogFragCoord * FogFragCoord);\n"
+		"\n"
+		"	vec3 world_normal = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));\n"
+		"	if (lightning_flash > 0.0) {\n"
+		"		float flash_factor = lightning_flash * v_weather_puddle;\n"
+		"		result.rgb += vec3(0.6, 0.7, 0.9) * flash_factor * (max(world_normal.z, 0.0) * 0.4 + 0.6);\n"
+		"	}\n"
+		"\n"
+		"	if (is_ground > 0.5 && weather_puddles > 0.5 && v_weather_puddle > 0.5 && abs(world_normal.z) > 0.95) {\n"
+		"		float pNoise = puddleNoise(v_world_pos.xy);\n"
+		"		float puddle_mask = smoothstep(0.48, 0.52, pNoise);\n"
+		"		if (puddle_mask > 0.0) {\n"
+		"			vec3 N = vec3(0.0, 0.0, 1.0);\n"
+		"			if (world_normal.z < 0.0) N.z = -1.0;\n"
+		"			vec3 V = normalize(r_origin - v_world_pos);\n"
+		"			vec3 L_lightning = normalize(vec3(0.2, -0.3, 0.95));\n"
+		"			vec3 R = reflect(-V, N);\n"
+		"			float spec_lightning = pow(max(dot(R, L_lightning), 0.0), 32.0);\n"
+		"			vec2 sky_tc = R.xy / (max(R.z, 0.001));\n"
+		"			float cloudPattern = noise(sky_tc * 1.5) * 0.6 + noise(sky_tc * 4.0) * 0.4;\n"
+		"			vec3 skyColor = vec3(0.05, 0.06, 0.08);\n"
+		"			vec3 cloudColor = vec3(0.25, 0.28, 0.32);\n"
+		"			vec3 sky_reflection = mix(skyColor, cloudColor, cloudPattern);\n"
+		"			float fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);\n"
+		"			vec3 reflection = sky_reflection * 0.7 + vec3(1.0, 1.0, 1.0) * spec_lightning * lightning_flash * 2.0;\n"
+		"			vec3 wet_base = result.rgb * 0.6;\n"
+		"			vec3 puddle_color = mix(wet_base, reflection, fresnel);\n"
+		"			result.rgb = mix(result.rgb, puddle_color, puddle_mask);\n"
+		"		}\n"
+		"	}\n"
+		"\n"
+		"	float fog = exp(-fog_density * fog_density * FogFragCoord * FogFragCoord);\n"
 		"	fog = clamp(fog, 0.0, 1.0);\n"
-		"	result = mix(gl_Fog.color, result, fog);\n"
-		"	result.a = Alpha;\n" // FIXME: This will make almost transparent things cut holes though heavy fog
-		"   if (gs_mod) {\n"
-		"       float value = clamp((result.r * 0.33) + (result.g * 0.55) + (result.b * 0.11), 0.0, 1.0);\n"
-		"       result.r = value;\n"
-		"       result.g = value;\n"
-		"       result.b = value;\n"
-		"   }"
+		"	result = mix(vec4(fog_red, fog_green, fog_blue, 1.0), result, fog);\n"
+		"	result.a = Alpha;\n"
+		"	if (gs_mod) {\n"
+		"		float value = clamp((result.r * 0.33) + (result.g * 0.55) + (result.b * 0.11), 0.0, 1.0);\n"
+		"		result.r = value;\n"
+		"		result.g = value;\n"
+		"		result.b = value;\n"
+		"	}\n"
 		"	gl_FragColor = result;\n"
 		"}\n";
 #endif
@@ -976,12 +1064,17 @@ void GLWorld_CreateShaders (void)
 		useAlphaTestLoc = GL_GetUniformLocation (&r_world_program, "UseAlphaTest");
 		alphaLoc = GL_GetUniformLocation (&r_world_program, "Alpha");
 		grayscale_enableLoc = GL_GetUniformLocation (&r_world_program, "gs_mod");
-#ifdef VITA
 		fogDensityLoc = GL_GetUniformLocation(&r_world_program, "fog_density");
 		fogRedLoc = GL_GetUniformLocation(&r_world_program, "fog_red");
 		fogGreenLoc = GL_GetUniformLocation(&r_world_program, "fog_green");
 		fogBlueLoc = GL_GetUniformLocation(&r_world_program, "fog_blue");
-#endif
+		weather_puddlesLoc = GL_GetUniformLocation (&r_world_program, "weather_puddles");
+		lightning_flashLoc = GL_GetUniformLocation (&r_world_program, "lightning_flash");
+		r_originLoc = GL_GetUniformLocation (&r_world_program, "r_origin");
+		is_groundLoc = GL_GetUniformLocation (&r_world_program, "is_ground");
+		is_lavaLoc = GL_GetUniformLocation (&r_world_program, "is_lava");
+		world_ambientLoc = GL_GetUniformLocation (&r_world_program, "world_ambient");
+		lava_timeLoc = GL_GetUniformLocation (&r_world_program, "lava_time");
 	}
 }
 
@@ -1023,10 +1116,12 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_EnableVertexAttribArrayFunc (vertAttrIndex);
 	GL_EnableVertexAttribArrayFunc (texCoordsAttrIndex);
 	GL_EnableVertexAttribArrayFunc (LMCoordsAttrIndex);
+	GL_EnableVertexAttribArrayFunc (weatherPuddleAttrIndex);
 	
 	GL_VertexAttribPointerFunc (vertAttrIndex,      3, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0));
 	GL_VertexAttribPointerFunc (texCoordsAttrIndex, 2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 3);
 	GL_VertexAttribPointerFunc (LMCoordsAttrIndex,  2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 5);
+	GL_VertexAttribPointerFunc (weatherPuddleAttrIndex, 1, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 7);
 	
 // set uniforms
 
@@ -1038,12 +1133,29 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_Uniform1iFunc (useOverbrightLoc, (int)gl_overbright.value);
 	GL_Uniform1iFunc (useAlphaTestLoc, 0);
 	GL_Uniform1fFunc (alphaLoc, entalpha);
-#ifdef VITA
+	float *fog_c = Fog_GetColor();
 	GL_Uniform1fFunc (fogDensityLoc, Fog_GetDensity() / 64.0f);
-	GL_Uniform1fFunc (fogRedLoc, fog_red / 64.0f);
-	GL_Uniform1fFunc (fogGreenLoc, fog_green / 64.0f);
-	GL_Uniform1fFunc (fogBlueLoc, fog_blue / 64.0f);
-#endif
+	GL_Uniform1fFunc (fogRedLoc, fog_c[0]);
+	GL_Uniform1fFunc (fogGreenLoc, fog_c[1]);
+	GL_Uniform1fFunc (fogBlueLoc, fog_c[2]);
+
+	extern cvar_t nzp_weather_ndu;
+	float puddles_val = 0.0f;
+	if (nzp_weather_ndu.value && cl.worldmodel && strstr(cl.worldmodel->name, "ndu.bsp"))
+		puddles_val = 1.0f;
+	GL_Uniform1fFunc (weather_puddlesLoc, puddles_val);
+
+	float ambient_val = (cl.worldmodel && strstr(cl.worldmodel->name, "town")) ? 0.42f : 1.0f;
+	GL_Uniform1fFunc (world_ambientLoc, ambient_val);
+	GL_Uniform1fFunc (lava_timeLoc, cl.time);
+
+	extern float weather_lightning_flash;
+	extern qboolean Weather_PointUnderOpenSky (vec3_t pos);
+	// gate the world's puddle/lightning flash on the player being out under open sky, so wet
+	// floors only flash with the storm when you're actually exposed -- not in roofed rooms.
+	GL_Uniform1fFunc (lightning_flashLoc,
+		(weather_lightning_flash > 0.0f && Weather_PointUnderOpenSky (r_origin)) ? weather_lightning_flash : 0.0f);
+	GL_Uniform3fFunc (r_originLoc, r_origin[0], r_origin[1], r_origin[2]);
 
 	// naievil -- experimental grayscale shader
 	GL_Uniform1fFunc (grayscale_enableLoc, /*sv_player->v.renderGrayscale*/0);
@@ -1082,6 +1194,11 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 					if (t->texturechains[chain]->flags & SURF_DRAWFENCE)
 						GL_Uniform1iFunc (useAlphaTestLoc, 1); // Flip alpha test back on
 										
+					extern int q_strcasecmp (const char * s1, const char * s2);
+					GL_Uniform1fFunc (is_groundLoc, q_strcasecmp(t->name, "GROUND_HB3") == 0 ? 1.0f : 0.0f);
+					qboolean is_lava_tex = (q_strcasecmp(t->name, "wall_br_red") == 0);
+					GL_Uniform1fFunc (is_lavaLoc, is_lava_tex ? 1.0f : 0.0f);
+										
 					bound = true;
 					lastlightmap = s->lightmaptexturenum;
 				}
@@ -1107,6 +1224,8 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_DisableVertexAttribArrayFunc (vertAttrIndex);
 	GL_DisableVertexAttribArrayFunc (texCoordsAttrIndex);
 	GL_DisableVertexAttribArrayFunc (LMCoordsAttrIndex);
+	GL_DisableVertexAttribArrayFunc (weatherPuddleAttrIndex);
+	GL_BindBuffer (GL_ARRAY_BUFFER, 0);
 	
 	GL_UseProgramFunc (0);
 	GL_SelectTexture (GL_TEXTURE0);

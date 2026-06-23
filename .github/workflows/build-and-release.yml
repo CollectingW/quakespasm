@@ -1,35 +1,6 @@
 name: Build and Publish Release
 on: [push]
 jobs:
-  Compile-VPK:
-    runs-on: ubuntu-latest
-    container:
-      image: vitasdk/vitasdk:latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-      - name: Install Packages and update VitaSDK
-        run: |
-          apk add bash build-base zip git curl cmake
-          vdpm vitashark
-          git clone https://github.com/bythos14/SceShaccCgExt.git
-          cd SceShaccCgExt
-          mkdir build && cd build
-          cmake .. && make -j32 install
-          cd ../../
-          git clone https://github.com/rinnegatamante/VitaGL.git
-          cd VitaGL
-          git checkout 4e1998a22b667472277c6e14051ca7e8afcf6766
-          make HAVE_FFP_SHADER_SUPPORT=1 -j${nproc} && make install
-      - name: Build
-        working-directory: ./
-        run: |
-          make -j32 -f Makefile.vita
-      - name: Upload Artifact 
-        uses: actions/upload-artifact@v4
-        with:
-          name: vita-nzp-vpk
-          path: ./build/vita/nzp.vpk
   Compile-NRO:
     runs-on: ubuntu-latest
     container:
@@ -41,7 +12,7 @@ jobs:
         working-directory: ./
         run: |
           make -j32 -f Makefile.nx
-      - name: Upload Artifact 
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nx-nzp-nro
@@ -50,7 +21,7 @@ jobs:
             ./build/nx/nzportable.nacp
   Unify-and-Release:
     runs-on: ubuntu-latest
-    needs: [Compile-VPK, Compile-NRO]
+    needs: [Compile-NRO]
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -63,7 +34,6 @@ jobs:
           path: ./
       - name: Turn Artifacts into .ZIP archives
         run: |
-          zip -r -j vita-nzp-vpk.zip vita-nzp-vpk/*
           zip -r -j nx-nzp-nro.zip nx-nzp-nro/*
       - name: Generate Build Date
         id: date
@@ -84,23 +54,13 @@ jobs:
           tag_name: bleeding-edge
           release_name: Automated Release ${{ steps.date.outputs.date }}
           body: |
-            This is a **bleeding edge** NZ:P NX/VITA release, stability is not guarenteed.
+            This is a **bleeding edge** NZ:P Switch Emulator Edition release; stability is not guaranteed.
 
             To install:
-            - Grab the .ZIP archive for your platform
-            - VITA: Extract the `.VPK`, copy it to your VITA, and install with VitaShell.
-            - NX: Extract `nzportable.nro` to `switch/nzportable` on your Nintendo Switch.
+            - Grab the `.ZIP` archive below.
+            - Extract `nzportable.nro` into `switch/nzportable` on your Nintendo Switch (or your emulator's sdmc).
           draft: true
           prerelease: false
-      - name: Upload VITA Archive
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./vita-nzp-vpk.zip
-          asset_name: vita-nzp-vpk.zip
-          asset_content_type: application/zip
       - name: Upload NX Archive
         uses: actions/upload-release-asset@v1
         env:

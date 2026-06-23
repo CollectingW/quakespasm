@@ -1546,6 +1546,81 @@ long COM_filelength (FILE *f)
 
 /*
 ===========
+COM_ResolveCaseInsensitive -- NZP
+
+NZP assets were authored on case-insensitive Windows; citron's sdmc on Linux is
+case-SENSITIVE, so a model/sprite/texture referenced with the wrong case fails to
+load (invisible props / "invisible walls", missing lamp glow, etc.). When an
+exact-case path misses, walk it component-by-component against the real directory
+entries and rebuild the actual on-disk path (fixes both file- AND directory-case,
+e.g. models/Props/ -> models/props/). No-op on case-insensitive systems (Windows,
+real Switch) since the exact open already succeeds there. Returns true + writes the
+corrected path to `out` only if something was actually case-corrected.
+===========
+*/
+#if !defined(_WIN32)
+#include <dirent.h>
+static qboolean COM_ResolveCaseInsensitive (const char *path, char *out, size_t outsize)
+{
+	char	resolved[MAX_OSPATH];
+	const char *p = path;
+	int	corrected = 0;
+
+	resolved[0] = '\0';
+	if (*p == '/') { resolved[0] = '/'; resolved[1] = '\0'; p++; }
+
+	while (*p)
+	{
+		char	comp[256];
+		char	cand[MAX_OSPATH];
+		size_t	rl, ci = 0;
+
+		while (*p && *p != '/') { if (ci < sizeof(comp)-1) comp[ci++] = *p; p++; }
+		comp[ci] = '\0';
+		while (*p == '/') p++;
+		if (ci == 0) continue;
+
+		rl = strlen (resolved);
+		q_snprintf (cand, sizeof(cand), "%s%s%s", resolved,
+			(rl && resolved[rl-1] != '/') ? "/" : "", comp);
+
+		if (Sys_FileTime (cand) != -1)
+		{	// exact-case component exists (file or dir) -- keep it
+			q_strlcpy (resolved, cand, sizeof(resolved));
+		}
+		else
+		{	// scan the resolved dir for a case-insensitive match
+			DIR		*d = opendir (resolved[0] ? resolved : ".");
+			struct dirent	*de;
+			int		found = 0;
+			if (d)
+			{
+				while ((de = readdir (d)))
+				{
+					if (!q_strcasecmp (de->d_name, comp))
+					{
+						q_snprintf (cand, sizeof(cand), "%s%s%s", resolved,
+							(rl && resolved[rl-1] != '/') ? "/" : "", de->d_name);
+						found = 1; corrected = 1;
+						break;
+					}
+				}
+				closedir (d);
+			}
+			if (!found)
+				return false;
+			q_strlcpy (resolved, cand, sizeof(resolved));
+		}
+	}
+	if (!corrected)
+		return false;
+	q_strlcpy (out, resolved, outsize);
+	return true;
+}
+#endif
+
+/*
+===========
 COM_FindFile
 
 Finds the file in the search path.
@@ -1613,6 +1688,17 @@ static int COM_FindFile (const char *filename, int *handle, FILE **file,
 
 			q_snprintf (netpath, sizeof(netpath), "%s/%s",search->filename, filename);
 			findtime = Sys_FileTime (netpath);
+#if !defined(_WIN32)
+			if (findtime == -1)
+			{	// case-insensitive retry (citron-on-Linux case-sensitive fs)
+				char cipath[MAX_OSPATH];
+				if (COM_ResolveCaseInsensitive (netpath, cipath, sizeof(cipath)))
+				{
+					q_strlcpy (netpath, cipath, sizeof(netpath));
+					findtime = Sys_FileTime (netpath);
+				}
+			}
+#endif
 			if (findtime == -1)
 				continue;
 

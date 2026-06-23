@@ -466,7 +466,9 @@ void SV_ReadClientMove (usercmd_t *move)
 	bits = MSG_ReadLong ();
 	host_client->edict->v.button0 = bits & 1;
 	host_client->edict->v.button2 = (bits & 2)>>1;
-	host_client->edict->v.button1 = (bits & 4)>>2;
+	// NZP per-client third-person aim into button1: bit 4=right(1), 512=left(2), none=0;
+	// bit 1024 = first-person corner-peek lean -> button1 5=lean-right, 6=lean-left.
+	host_client->edict->v.button1 = ((bits & 4)>>2) | ((bits & 512)>>8) | ((bits & 1024)>>8);
 	host_client->edict->v.button3 = (bits & 8)>>3;
 	host_client->edict->v.button4 = (bits & 16)>>4;
 	host_client->edict->v.button5 = (bits & 32)>>5;

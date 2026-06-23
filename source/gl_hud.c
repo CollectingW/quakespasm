@@ -73,6 +73,16 @@ int screenflash_type;
 double screenflash_worktime;
 double screenflash_starttime;
 
+float downed_filter_target;  // last-stand death filter target intensity (0..1)
+float downed_filter_current; // smoothly-lerped current intensity
+int turret_countdown = 0;
+extern cvar_t cam_tour;
+extern int cam_tour_index;
+int cranked_hud_active = 0;
+int cranked_hud_level = 0;
+int cranked_hud_secs = 0;
+
+
 extern qboolean paused_hack;
 qboolean domaxammo;
 qboolean has_chaptertitle;
@@ -176,9 +186,7 @@ void HUD_Init (void) {
 	b_xbutton = Draw_CachePic ("gfx/butticons/xbutton.tga");
 #endif
 	fx_blood_lu = Draw_CachePic ("gfx/hud/blood.tga");
-#ifdef VITA
-	Achievement_Init();
-#endif
+	Achievement_Init();	// was VITA-only; needed so achievement_list is populated on Switch
 }
 
 /*
@@ -463,31 +471,31 @@ void HUD_Points (void)
 
 	// draw number
 		f = s->points;
-		if (f > current_points[i])
+		if (f > current_points[k])
 		{
 			point_change_interval_neg = 0;
 			if (!point_change_interval)
 			{
-				point_change_interval = (int)(f - old_points[i])/55;;
+				point_change_interval = (int)(f - old_points[k])/55;;
 			}
-			current_points[i] = old_points[i] + point_change_interval;
-			if (f < current_points[i])
+			current_points[k] = old_points[k] + point_change_interval;
+			if (f < current_points[k])
 			{
-				current_points[i] = f;
+				current_points[k] = f;
 				point_change_interval = 0;
 			}
 		}
-		else if (f < current_points[i])
+		else if (f < current_points[k])
 		{
 			point_change_interval = 0;
 			if (!point_change_interval_neg)
 			{
-				point_change_interval_neg = (int)(old_points[i] - f)/55;
+				point_change_interval_neg = (int)(old_points[k] - f)/55;
 			}
-			current_points[i] = old_points[i] - point_change_interval_neg;
-			if (f > current_points[i])
+			current_points[k] = old_points[k] - point_change_interval_neg;
+			if (f > current_points[k])
 			{
-				current_points[i] = f;
+				current_points[k] = f;
 				point_change_interval_neg = 0;
 			}
 		}
@@ -499,7 +507,7 @@ void HUD_Points (void)
 		int x_position;
 		int point_x_offset;
 
-		if (i == cl.viewentity - 1) {
+		if (k == cl.viewentity - 1) {
 			moneyback = sb_moneyback;
 
 #ifdef VITA
@@ -531,31 +539,31 @@ void HUD_Points (void)
 		
 #ifdef VITA
 		xplus = getTextWidth(va("%i", current_points), 1.0f);
-		Draw_ColoredStringScale (((195 - xplus)/2)-point_x_offset, 413 - (35 * i), va("%i", current_points[i]), r, g, b, 1, 2.0f); //2x Scale/White
+		Draw_ColoredStringScale (((195 - xplus)/2)-point_x_offset, 413 - (35 * i), va("%i", current_points[k]), r, g, b, 1, 2.0f); //2x Scale/White
 #else
 		xplus = getTextWidth(va("%i", current_points), 1.0f) - 2;
-		Draw_ColoredStringScale (((145 - xplus)/2)-point_x_offset, 633 - (24 * i), va("%i", current_points[i]), r, g, b, 1, 1.5f);
+		Draw_ColoredStringScale (((145 - xplus)/2)-point_x_offset, 633 - (24 * i), va("%i", current_points[k]), r, g, b, 1, 1.5f);
 #endif // VITA
 
-		if (old_points[i] != f)
+		if (old_points[k] != f)
 		{
-			if (f > old_points[i])
+			if (f > old_points[k])
 			{
 			#ifdef VITA
-				HUD_Parse_Point_Change(f - old_points[i], 0, 45 - (xplus), 415 - (35 * i));
+				HUD_Parse_Point_Change(f - old_points[k], 0, 45 - (xplus), 415 - (35 * i));
 			#else 
-				HUD_Parse_Point_Change(f - old_points[i], 0, 145 - (xplus), y - (28 * i));	
+				HUD_Parse_Point_Change(f - old_points[k], 0, 145 - (xplus), y - (28 * i));	
 			#endif // VITA
 			}
 			else
 			{
 			#ifdef VITA
-				HUD_Parse_Point_Change(old_points[i] - f, 1, 45 - (xplus), 415 - (35 * i));
+				HUD_Parse_Point_Change(old_points[k] - f, 1, 45 - (xplus), 415 - (35 * i));
 			#else
-				HUD_Parse_Point_Change(old_points[i] - f, 1, 145 - (xplus), y - (28 * i));
+				HUD_Parse_Point_Change(old_points[k] - f, 1, 145 - (xplus), y - (28 * i));
 			#endif // VITA
 			}
-			old_points[i] = f;
+			old_points[k] = f;
 		}
 		
 		y += 10;
@@ -1625,7 +1633,7 @@ void HUD_ProgressBar (void)
 
 	if (cl.progress_bar)
 	{
-		progressbar = 100 - ((cl.progress_bar-sv.time)*10);
+		progressbar = 100 - ((cl.progress_bar-cl.time)*10);
 		if (progressbar >= 100)
 			progressbar = 100;
 		Draw_FillByColor  ((vid.width)/4 - 51, vid.height/2 + (vid.height/2)*0.75 - 1, 102, 5, 0, 0, 0, 100/255.0);
@@ -1645,7 +1653,7 @@ Achievements based on code by Arkage
 ===============
 */
 
-#ifdef VITA
+// was #ifdef VITA -- enabled on Switch too so the achievement system works.
 int		achievement; // the background image
 int		achievement_unlocked;
 char		achievement_text[MAX_QPATH];
@@ -1658,13 +1666,13 @@ void HUD_Achievement (void)
 
 	if (achievement_unlocked == 1)
 	{
-		
+		// draw the popup in native-res canvas so it's a small card in the
+		// top-left that slides down into view over ~ a second.
+		GL_SetCanvas (CANVAS_DEFAULT);
+
 		smallsec = smallsec + 0.4;
 		if (smallsec >= 30)
 			smallsec = 30;
-		//Background image
-		//Sbar_DrawPic (176, 5, achievement);
-		// The achievement text
 		Draw_AlphaStretchPic (30, smallsec, 200, 100, 255, achievement_list[ach_pic].img);
 	}
 
@@ -1691,7 +1699,6 @@ void HUD_Parse_Achievement (int ach)
 	achievement_list[ach].unlocked = 1;
 	Save_Achivements();
 }
-#endif
 //=============================================================================
 
 /*
@@ -2079,8 +2086,8 @@ void HUD_PlayerName (void)
 	y = 633;
 #endif
 
-	if (nameprint_time - sv.time < 1)
-		alpha = (nameprint_time - sv.time);
+	if (nameprint_time - cl.time < 1)
+		alpha = (nameprint_time - cl.time);
 
 	Draw_ColoredStringScale(x, y, player_name, 255, 255, 255, alpha, scale);
 }
@@ -2161,6 +2168,232 @@ void HUD_Screenflash (void)
 
 //=============================================================================
 
+// HUD_DownedFilter: last-stand "dying" screen filter (grey/dark + pulsing red),
+// intensity from svc_downedfilter; lerped so it fades in/out smoothly.
+static void HUD_DownedFilterQuad (float r, float g, float b, float a)
+{
+	if (a <= 0)
+		return;
+	if (a > 1)
+		a = 1;
+	glColor4f (r, g, b, a);
+	glBegin (GL_QUADS);
+	glVertex2f (0, 0);
+	glVertex2f (glwidth, 0);
+	glVertex2f (glwidth, glheight);
+	glVertex2f (0, glheight);
+	glEnd ();
+}
+
+void HUD_DownedFilter (void)
+{
+	float p, wob, step;
+
+	// drive purely from the server's intent (svc_downedfilter, sent MSG_ONE to the downed
+	// player). Do NOT gate on health (it's reset above 30), only force-clear when truly dead.
+	if (cl.stats[STAT_HEALTH] <= 0) {
+		downed_filter_current = downed_filter_target = 0;
+		return;
+	}
+
+	// Smoothly approach the networked target intensity.
+	step = host_frametime * 2.5;
+	if (step > 1)
+		step = 1;
+	downed_filter_current += (downed_filter_target - downed_filter_current) * step;
+
+	if (downed_filter_current <= 0.003) {
+		downed_filter_current = 0;
+		return;
+	}
+
+	p = downed_filter_current;
+	if (p > 1)
+		p = 1;
+
+	// Subtle "movey" pulse that grows as death nears.
+	wob = sin(realtime * 4.5) * 0.06 * p;
+
+	GL_SetCanvas (CANVAS_DEFAULT);
+	glDisable (GL_TEXTURE_2D);
+	glDisable (GL_ALPHA_TEST);
+	glEnable (GL_BLEND);
+	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+	HUD_DownedFilterQuad (0.5, 0.5, 0.5, 0.40 * p);          // grey wash (desaturate look)
+	HUD_DownedFilterQuad (0.0, 0.0, 0.0, (0.55 * p) + wob);  // darken
+	HUD_DownedFilterQuad (0.55, 0.0, 0.0, (0.35 * p) + wob); // pulsing blood tint
+
+	glColor4f (1, 1, 1, 1);
+	glEnable (GL_TEXTURE_2D);
+	glEnable (GL_ALPHA_TEST);
+	glDisable (GL_BLEND);
+}
+
+void HUD_TurretTimer (void)
+{
+	if (turret_countdown <= 0)
+		return;
+
+	char str[32];
+	sprintf(str, "Turret: %d", turret_countdown);
+
+	float scale = 1.25f;
+	int x, y;
+#ifdef VITA
+	scale = 2.0f;
+	x = vid.width - getTextWidth(str, scale) - 20;
+	y = vid.height - 120;
+#else
+	x = vid.width - getTextWidth(str, scale) - 20;
+	y = vid.height - 80;
+#endif
+
+	Draw_ColoredStringScale(x, y, str, 1.0f, 0.3f, 0.3f, 1.0f, scale);
+}
+
+// Background screen-edge vignette; drawn as its own layer (raw GL) BEFORE the
+// HUD text so its GL-state changes can't clobber the text draw.
+void HUD_CrankedVignette (void)
+{
+	if (!cranked_hud_active)
+		return;
+
+	float a, r, g, b;
+	if (cranked_hud_secs == 255) {
+		a = 0.26f + 0.10f * sin(realtime * 8.0f);
+		r = 1.0f; g = 0.12f; b = 0.08f;
+	} else if (cranked_hud_level > 0) {
+		a = (cranked_hud_level / 5.0f) * 0.16f;
+		r = 1.0f; g = 0.80f; b = 0.10f;
+	} else {
+		return;
+	}
+
+	GL_SetCanvas (CANVAS_DEFAULT);
+	glDisable (GL_TEXTURE_2D);
+	glDisable (GL_ALPHA_TEST);
+	glEnable (GL_BLEND);
+	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+	float bx = glwidth * 0.15f;
+	float by = glheight * 0.18f;
+
+	glBegin (GL_QUADS);
+	glColor4f (r, g, b, a); glVertex2f (0, 0);        glVertex2f (glwidth, 0);
+	glColor4f (r, g, b, 0); glVertex2f (glwidth, by); glVertex2f (0, by);
+	glColor4f (r, g, b, 0); glVertex2f (0, glheight - by); glVertex2f (glwidth, glheight - by);
+	glColor4f (r, g, b, a); glVertex2f (glwidth, glheight);  glVertex2f (0, glheight);
+	glColor4f (r, g, b, a); glVertex2f (0, 0);  glVertex2f (0, glheight);
+	glColor4f (r, g, b, 0); glVertex2f (bx, glheight); glVertex2f (bx, 0);
+	glColor4f (r, g, b, 0); glVertex2f (glwidth - bx, 0); glVertex2f (glwidth - bx, glheight);
+	glColor4f (r, g, b, a); glVertex2f (glwidth, glheight);  glVertex2f (glwidth, 0);
+	glEnd ();
+
+	glColor4f (1, 1, 1, 1);
+	glEnable (GL_TEXTURE_2D);
+	glEnable (GL_ALPHA_TEST);
+	glDisable (GL_BLEND);
+
+	GL_SetCanvas (CANVAS_USEPRINT);	// restore so the HUD elements after us position correctly
+}
+
+void HUD_Cranked (void)
+{
+	if (!cranked_hud_active)
+		return;
+
+	char str[48];
+	float r = 1.0f, g = 0.55f, b = 0.1f;
+
+	if (cranked_hud_secs == 255) {
+		sprintf(str, "MELTDOWN!  GET A KILL");
+		if ((int)(cl.time * 5) & 1) { r = 1.0f; g = 0.1f; b = 0.1f; }
+	} else {
+		sprintf(str, "CRANKED  Lv %d   %ds", cranked_hud_level, cranked_hud_secs);
+		if (cranked_hud_secs <= 3) { r = 1.0f; g = 0.85f; b = 0.2f; }
+	}
+
+	int x = vid.width - getTextWidth(str, 2.0f) - 20;
+	Draw_ColoredStringScale(x, 18, str, r, g, b, 1.0f, 2.0f);
+}
+
+void HUD_CamTour (void)
+{
+	GL_SetCanvas (CANVAS_DEFAULT);
+	int w = glwidth, h = glheight;
+
+	glDisable (GL_TEXTURE_2D);
+	glDisable (GL_ALPHA_TEST);
+	glEnable (GL_BLEND);
+
+	// additive lift so the dark cam feed reads behind the menu
+	glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+	glBegin (GL_QUADS);
+	glColor4f (0.15f, 0.16f, 0.15f, 1.0f);
+	glVertex2f (0,0); glVertex2f (w,0); glVertex2f (w,h); glVertex2f (0,h);
+	glEnd ();
+
+	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	float bx = w * 0.16f, by = h * 0.20f, va = 0.18f;
+	glBegin (GL_QUADS);
+	glColor4f (0,0,0,va); glVertex2f (0,0);          glVertex2f (w,0);
+	glColor4f (0,0,0,0);  glVertex2f (w,by);         glVertex2f (0,by);
+	glColor4f (0,0,0,0);  glVertex2f (0,h-by);       glVertex2f (w,h-by);
+	glColor4f (0,0,0,va); glVertex2f (w,h);          glVertex2f (0,h);
+	glColor4f (0,0,0,va); glVertex2f (0,0);          glVertex2f (0,h);
+	glColor4f (0,0,0,0);  glVertex2f (bx,h);         glVertex2f (bx,0);
+	glColor4f (0,0,0,0);  glVertex2f (w-bx,0);       glVertex2f (w-bx,h);
+	glColor4f (0,0,0,va); glVertex2f (w,h);          glVertex2f (w,0);
+	glEnd ();
+	glColor4f (1,1,1,1);
+	glEnable (GL_TEXTURE_2D);
+	glEnable (GL_ALPHA_TEST);
+	glDisable (GL_BLEND);
+
+	int yy;
+	for (yy = 0; yy < h; yy += 3)
+		Draw_FillByColor (0, yy, w, 1, 0, 0, 0, 26);
+
+	if (key_dest != key_menu) {
+		char lbl[64];
+		sprintf (lbl, "CAM %02d", cam_tour_index + 1);
+		Draw_ColoredStringScale (30, 26, lbl, 0.7f, 1.0f, 0.7f, 1.0f, 3.0f);
+		Draw_ColoredStringScale (30, 60, "NACHT DER UNTOTEN", 0.7f, 1.0f, 0.7f, 1.0f, 2.0f);
+
+		if (((int)(realtime * 1.5)) & 1) {
+			char rec[] = "REC";
+			Draw_FillByColor (w - 150, 30, 22, 22, 220, 30, 30, 255);   // red dot
+			Draw_ColoredStringScale (w - 120, 28, rec, 1.0f, 0.25f, 0.25f, 1.0f, 3.0f);
+		}
+	}
+}
+
+
+//=============================================================================
+
+
+// Skull Ball: vertical charge meter, driven by STAT_SKULLCHARGE (0-100). The QC only
+// sets it while charging, so it's gamemode-gated by construction (0 elsewhere = not drawn).
+void HUD_SkullCharge (void) {
+	int chg = cl.stats[STAT_SKULLCHARGE];
+	if (chg <= 0)
+		return;
+
+	float frac = chg / 100.0;
+	if (frac > 1) frac = 1;
+
+	int mw = 22, mh = 150;
+	int mx = vid.width - 70;					// right column (USEPRINT space)
+	int my = (vid.height - mh) / 2;			// vertically centered
+	int fh = (int)(mh * frac);
+	int r = (int)(frac * 255);
+	int g = (int)((1.0 - frac) * 255);
+
+	Draw_FillByColor (mx - 3, my - 3, mw + 6, mh + 6, 20, 20, 20, 220);	// border
+	Draw_FillByColor (mx, my, mw, mh, 0, 0, 0, 220);					// track
+	Draw_FillByColor (mx, my + (mh - fh), mw, fh, r, g, 40, 255);		// fill (bottom-up)
+}
 
 void HUD_Draw (void) {
 	if (m_state == m_exit || paused_hack == true)
@@ -2168,12 +2401,17 @@ void HUD_Draw (void) {
 
 	if (key_dest == key_menu_pause) {
 		// Make sure we still draw the screen flash.
-		if (screenflash_duration > sv.time)
+		if (screenflash_duration > cl.time)
 			HUD_Screenflash();
 		return;
 	}
 
 	GL_SetCanvas(CANVAS_USEPRINT);
+
+	if (cam_tour.value) {
+		HUD_CamTour();
+		return;
+	}
 
 	if (waypoint_mode.value) {
 #ifndef VITA
@@ -2199,19 +2437,27 @@ void HUD_Draw (void) {
 	if (cl.stats[STAT_HEALTH] <= 0) {
 		HUD_EndScreen ();
 
+		// Dead/spectating -- no last-stand filter.
+		downed_filter_current = downed_filter_target = 0;
+
 		// Make sure we still draw the screen flash.
-		if (screenflash_duration > sv.time)
+		if (screenflash_duration > cl.time)
 			HUD_Screenflash();
+
+		// still show the achievement popup over the game-over screen (some unlock AT
+		// death, and this early-return used to swallow their popup until respawn).
+		HUD_Achievement();
 		return;
 	}
 
-	if (bettyprompt_time > sv.time)
+	if (bettyprompt_time > cl.time)
 		HUD_BettyPrompt();
 
-	if (nameprint_time > sv.time)
+	if (nameprint_time > cl.time)
 		HUD_PlayerName();
 
-	HUD_Blood(); 
+	HUD_CrankedVignette();
+	HUD_Blood();
 	HUD_Rounds();
 	HUD_Perks();
 	HUD_Powerups();
@@ -2225,9 +2471,9 @@ void HUD_Draw (void) {
 	}
 	HUD_Points();
 	HUD_Point_Change();
-#ifdef VITA
-	HUD_Achievement();
-#endif
+	HUD_Achievement();	// was VITA-only; now shows the unlock popup on Switch
+	HUD_TurretTimer();
+
 
 	if (domaxammo == true) {
 		if (maxammoopac <= 0) {
@@ -2242,8 +2488,11 @@ void HUD_Draw (void) {
 	}
 
 	// This should always come last!
-	if (screenflash_duration > sv.time)
+	if (screenflash_duration > cl.time)
 		HUD_Screenflash();
+
+	// Last-stand death filter (sets its own canvas; draws over everything).
+	HUD_DownedFilter();
 
 	GL_SetCanvas(CANVAS_DEFAULT);
 }

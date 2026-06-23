@@ -390,6 +390,9 @@ void Chase_Init (void);
 void TraceLine (vec3_t start, vec3_t end, vec3_t impact);
 void Chase_UpdateForClient (void);	//johnfitz
 void Chase_UpdateForDrawing (void);	//johnfitz
+void Chase_Reset (void);
+qboolean Chase_IsFirstPersonForced (void);  // R3 toggle or sniper ADS
+void GrenadeTrajectory_Draw (void);	// third-person grenade trajectory preview
 
 #endif	/* _CLIENT_H_ */
 

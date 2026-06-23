@@ -72,6 +72,7 @@ extern	int		pr_edict_size;	/* in bytes */
 void PR_Init (void);
 
 void PR_ExecuteProgram (func_t fnum);
+void PR_ExecuteProgramNamed (func_t fnum, const char *name);
 void PR_LoadProgs (void);
 
 const char *PR_GetString (int num);

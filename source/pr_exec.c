@@ -353,6 +353,18 @@ The interpretation main loop
 #define OPB ((eval_t *)&pr_globals[(unsigned short)st->b])
 #define OPC ((eval_t *)&pr_globals[(unsigned short)st->c])
 
+// tolerant variant for optional engine->QC entry points: if the function pointer is
+// unset, name it and return instead of Host_Error'ing, so it degrades gracefully.
+void PR_ExecuteProgramNamed (func_t fnum, const char *name)
+{
+	if (!fnum || fnum >= progs->numfunctions)
+	{
+		Con_Printf ("NZPDBG: engine entry point '%s' is NULL/unset -- skipping\n", name);
+		return;
+	}
+	PR_ExecuteProgram (fnum);
+}
+
 void PR_ExecuteProgram (func_t fnum)
 {
 	eval_t		*ptr;
@@ -364,8 +376,13 @@ void PR_ExecuteProgram (func_t fnum)
 
 	if (!fnum || fnum >= progs->numfunctions)
 	{
+		// NZPDBG: dump as much context as possible so a NULL function call
+		// (e.g. a .think/.touch/callback that's 0) can be traced to its source.
+		Con_Printf("NZPDBG: NULL function call. last QC func = %s, self =\n",
+			(pr_xfunction) ? PR_GetString(pr_xfunction->s_name) : "<none>");
 		if (pr_global_struct->self)
 			ED_Print (PROG_TO_EDICT(pr_global_struct->self));
+		PR_StackTrace ();
 		Host_Error ("PR_ExecuteProgram: NULL function");
 	}
 

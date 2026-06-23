@@ -59,7 +59,9 @@ int		messagesReceived		= 0;
 int		unreliableMessagesSent		= 0;
 int		unreliableMessagesReceived	= 0;
 
-static	cvar_t	net_messagetimeout = {"net_messagetimeout","300",CVAR_NONE};
+// was 300s -- a client whose host quit froze for ages (svc_disconnect doesn't survive
+// the LDN proxy). 20s boots stuck clients out; legit map loads keepalive past it.
+static	cvar_t	net_messagetimeout = {"net_messagetimeout","20",CVAR_NONE};
 cvar_t	hostname = {"hostname", "UNNAMED", CVAR_NONE};
 
 // these two macros are to make the code more readable

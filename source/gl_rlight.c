@@ -44,7 +44,10 @@ void R_AnimateLight (void)
 	{
 		if (!cl_lightstyle[j].length)
 		{
-			d_lightstylevalue[j] = 256;
+			if (j == 0 && (strstr(cl.mapname, "town") != NULL || strstr(cl.mapname, "transit") != NULL))
+				d_lightstylevalue[j] = 75; // night-time atmosphere scale
+			else
+				d_lightstylevalue[j] = 256;
 			continue;
 		}
 		//johnfitz -- r_flatlightstyles
@@ -58,7 +61,8 @@ void R_AnimateLight (void)
 			k = cl_lightstyle[j].map[k] - 'a';
 		}
 		d_lightstylevalue[j] = k*22;
-		//johnfitz
+		if (j == 0 && (strstr(cl.mapname, "town") != NULL || strstr(cl.mapname, "transit") != NULL))
+			d_lightstylevalue[j] = d_lightstylevalue[j] * 75 / 256;
 	}
 }
 

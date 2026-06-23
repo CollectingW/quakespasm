@@ -104,7 +104,7 @@ returns a pointer to hunk allocated RGBA data
 byte *Image_LoadImage (const char *name, int *width, int *height)
 {
 	FILE	*f;
-	
+
 	q_snprintf (loadfilename, sizeof(loadfilename), "%s.tga", name);
 	COM_FOpenFile (loadfilename, &f, NULL);
 	if (f) {

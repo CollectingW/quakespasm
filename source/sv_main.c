@@ -33,6 +33,75 @@ int		sv_protocol = PROTOCOL_FITZQUAKE; //johnfitz
 extern qboolean	pr_alpha_supported; //johnfitz
 
 cvar_t 	sv_gamemode = {"sv_gamemode", "0", false};
+cvar_t 	sv_random_mix = {"sv_random_mix", "0", CVAR_NONE}; // layer Random RNG on a base mode; not archived (per-session toggle)
+cvar_t 	sv_gamemode_mix = {"sv_gamemode_mix", "0", CVAR_NONE}; // MIX bitmask: 1=Cranked 2=Hardpoint 4=Random (base runs as Classic)
+// per-client datagram size for remote clients; stock 1400 drops zombies on a LAN horde
+cvar_t 	sv_datagram_mtu = {"sv_datagram_mtu", "16000", CVAR_ARCHIVE};
+// progression counters; saved to progress.dat on change (config.cfg only writes on clean exit)
+cvar_t 	nzp_reloads = {"nzp_reloads", "0", CVAR_NONE};		// "Never Too Low" -> unlocks Scavenger at 100
+cvar_t 	nzp_loadout1 = {"nzp_loadout1", "0", CVAR_NONE};	// equipped loadout perk in slot 1 (0=None,1=Scavenger)
+cvar_t 	nzp_loadout2 = {"nzp_loadout2", "0", CVAR_NONE};	// slot 2
+cvar_t 	nzp_loadout3 = {"nzp_loadout3", "0", CVAR_NONE};	// slot 3
+cvar_t 	nzp_scav_level = {"nzp_scav_level", "1", CVAR_NONE};	// Scavenger level 1-4
+cvar_t 	nzp_scav_mags = {"nzp_scav_mags", "0", CVAR_NONE};	// (legacy, unused)
+cvar_t 	nzp_box_buys = {"nzp_box_buys", "0", CVAR_NONE};		// Bartering King: total Mystery Box buys
+cvar_t 	nzp_barter_level = {"nzp_barter_level", "1", CVAR_NONE};	// Bartering King level 1-4
+cvar_t 	nzp_knife_kills = {"nzp_knife_kills", "0", CVAR_NONE};	// "Don't Bring a Knife" -> 100 melee kills in Random
+cvar_t 	nzp_hp_clean_rounds = {"nzp_hp_clean_rounds", "0", CVAR_NONE};	// Hardpoint: rounds won with kills only inside the zone
+cvar_t 	nzp_skin_m1911 = {"nzp_skin_m1911", "0", CVAR_NONE};	// equipped M1911 skin: 0=None,1=Gold (Loadout menu)
+cvar_t 	nzp_headshot_kills = {"nzp_headshot_kills", "0", CVAR_NONE};	// "Locked In" -> unlocks Deadeye at 50
+cvar_t 	nzp_deadeye_level = {"nzp_deadeye_level", "1", CVAR_NONE};	// Deadeye level 1-4
+cvar_t 	nzp_pap_kills = {"nzp_pap_kills", "0", CVAR_NONE};	// "Packed Or Nothing" -> 1000 Pack-a-Punch kills
+
+static qboolean progression_loading = false;
+
+void SaveProgression (void)
+{
+	FILE *f = fopen (va("%s/progress.dat", com_gamedir), "w");
+	if (!f)
+		return;
+	fprintf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+		(int)nzp_reloads.value, (int)nzp_scav_level.value, (int)nzp_scav_mags.value,
+		(int)nzp_loadout1.value, (int)nzp_loadout2.value, (int)nzp_loadout3.value,
+		(int)nzp_box_buys.value, (int)nzp_barter_level.value,
+		(int)nzp_knife_kills.value, (int)nzp_hp_clean_rounds.value,
+		(int)nzp_skin_m1911.value,
+		(int)nzp_headshot_kills.value, (int)nzp_deadeye_level.value, (int)nzp_pap_kills.value);
+	fclose (f);
+}
+
+void LoadProgression (void)
+{
+	// defaults cover older/shorter files (newer fields stay at default if absent)
+	int rl=0, sl=1, sm=0, l1=0, l2=0, l3=0, bb=0, bl=1, kk=0, hp=0, sk=0, he=0, de=1, pk=0;
+	FILE *f = fopen (va("%s/progress.dat", com_gamedir), "r");
+	if (!f)
+		return;
+	fscanf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d", &rl,&sl,&sm,&l1,&l2,&l3,&bb,&bl,&kk,&hp,&sk,&he,&de,&pk);
+	fclose (f);
+	progression_loading = true;	// don't re-save while loading
+	Cvar_SetValue ("nzp_reloads", rl);
+	Cvar_SetValue ("nzp_scav_level", sl);
+	Cvar_SetValue ("nzp_scav_mags", sm);
+	Cvar_SetValue ("nzp_loadout1", l1);
+	Cvar_SetValue ("nzp_loadout2", l2);
+	Cvar_SetValue ("nzp_loadout3", l3);
+	Cvar_SetValue ("nzp_box_buys", bb);
+	Cvar_SetValue ("nzp_barter_level", bl);
+	Cvar_SetValue ("nzp_knife_kills", kk);
+	Cvar_SetValue ("nzp_hp_clean_rounds", hp);
+	Cvar_SetValue ("nzp_skin_m1911", sk);
+	Cvar_SetValue ("nzp_headshot_kills", he);
+	Cvar_SetValue ("nzp_deadeye_level", de);
+	Cvar_SetValue ("nzp_pap_kills", pk);
+	progression_loading = false;
+}
+
+static void Progression_Changed (cvar_t *var)
+{
+	if (!progression_loading)
+		SaveProgression ();
+}
 cvar_t 	sv_difficulty = {"sv_difficulty", "0", false};
 cvar_t 	sv_startround = {"sv_startround", "0", false};
 cvar_t 	sv_magic = {"sv_magic", "1", false};
@@ -112,6 +181,39 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_freezenonclients);
 	Cvar_RegisterVariable (&sv_altnoclip); //johnfitz
 	Cvar_RegisterVariable (&sv_gamemode);
+	Cvar_RegisterVariable (&sv_random_mix);
+	Cvar_RegisterVariable (&sv_gamemode_mix);
+	Cvar_RegisterVariable (&sv_datagram_mtu);
+	Cvar_RegisterVariable (&nzp_reloads);
+	Cvar_RegisterVariable (&nzp_loadout1);
+	Cvar_RegisterVariable (&nzp_loadout2);
+	Cvar_RegisterVariable (&nzp_loadout3);
+	Cvar_RegisterVariable (&nzp_scav_level);
+	Cvar_RegisterVariable (&nzp_scav_mags);
+	Cvar_RegisterVariable (&nzp_box_buys);
+	Cvar_RegisterVariable (&nzp_barter_level);
+	Cvar_RegisterVariable (&nzp_knife_kills);
+	Cvar_RegisterVariable (&nzp_hp_clean_rounds);
+	Cvar_RegisterVariable (&nzp_skin_m1911);
+	Cvar_RegisterVariable (&nzp_headshot_kills);
+	Cvar_RegisterVariable (&nzp_deadeye_level);
+	Cvar_RegisterVariable (&nzp_pap_kills);
+	// persist progression IMMEDIATELY on any change (survives force-close)
+	Cvar_SetCallback (&nzp_reloads, Progression_Changed);
+	Cvar_SetCallback (&nzp_loadout1, Progression_Changed);
+	Cvar_SetCallback (&nzp_loadout2, Progression_Changed);
+	Cvar_SetCallback (&nzp_loadout3, Progression_Changed);
+	Cvar_SetCallback (&nzp_scav_level, Progression_Changed);
+	Cvar_SetCallback (&nzp_scav_mags, Progression_Changed);
+	Cvar_SetCallback (&nzp_box_buys, Progression_Changed);
+	Cvar_SetCallback (&nzp_barter_level, Progression_Changed);
+	Cvar_SetCallback (&nzp_knife_kills, Progression_Changed);
+	Cvar_SetCallback (&nzp_hp_clean_rounds, Progression_Changed);
+	Cvar_SetCallback (&nzp_skin_m1911, Progression_Changed);
+	Cvar_SetCallback (&nzp_headshot_kills, Progression_Changed);
+	Cvar_SetCallback (&nzp_deadeye_level, Progression_Changed);
+	Cvar_SetCallback (&nzp_pap_kills, Progression_Changed);
+	Cmd_AddCommand ("loadprogress", LoadProgression);	// queued after configs in Host_Init
 	Cvar_RegisterVariable (&sv_difficulty);
 	Cvar_RegisterVariable (&sv_startround);
 	Cvar_RegisterVariable (&sv_magic);
@@ -397,7 +499,7 @@ void SV_ConnectClient (int clientnum)
 	else
 	{
 	// call the progs to get default spawn parms for the new client
-		PR_ExecuteProgram (pr_global_struct->SetNewParms);
+		PR_ExecuteProgramNamed (pr_global_struct->SetNewParms, "SetNewParms");
 		for (i=0 ; i<NUM_SPAWN_PARMS ; i++)
 			client->spawn_parms[i] = (&pr_global_struct->parm1)[i];
 	}
@@ -563,28 +665,200 @@ qboolean SV_VisibleToClient (edict_t *client, edict_t *test, qmodel_t *worldmode
 
 /*
 =============
-SV_WriteEntitiesToClient
+SV_EmitEntity -- NZP
 
+Write a single entity's delta update. Returns false if there isn't room left in
+the packet (the caller stops / round-robins). An alpha-zero entity is "handled"
+(returns true) without writing any bytes, matching the old inline behaviour.
+=============
+*/
+static qboolean SV_EmitEntity (int e, edict_t *ent, sizebuf_t *msg)
+{
+	int		bits, i;
+	float	miss;
+
+	//johnfitz -- max size for protocol 15 is 18 bytes, for protocol 85 it's 24.
+	if (msg->cursize + 24 > msg->maxsize)
+		return false;
+
+	bits = 0;
+
+	for (i=0 ; i<3 ; i++)
+	{
+		miss = ent->v.origin[i] - ent->baseline.origin[i];
+		if ( miss < -0.1 || miss > 0.1 )
+			bits |= U_ORIGIN1<<i;
+	}
+
+	if ( ent->v.angles[0] != ent->baseline.angles[0] )
+		bits |= U_ANGLE1;
+
+	if ( ent->v.angles[1] != ent->baseline.angles[1] )
+		bits |= U_ANGLE2;
+
+	if ( ent->v.angles[2] != ent->baseline.angles[2] )
+		bits |= U_ANGLE3;
+
+	if (ent->v.movetype == MOVETYPE_STEP)
+		bits |= U_STEP;	// don't mess up the step animation
+
+	if (ent->baseline.colormap != ent->v.colormap)
+		bits |= U_COLORMAP;
+
+	if (ent->baseline.skin != ent->v.skin)
+		bits |= U_SKIN;
+
+	if (ent->baseline.frame != ent->v.frame)
+		bits |= U_FRAME;
+
+	if (ent->baseline.effects != ent->v.effects)
+		bits |= U_EFFECTS;
+
+	if (ent->baseline.modelindex != ent->v.modelindex)
+		bits |= U_MODEL;
+
+	if (ent->baseline.light_lev != ent->v.light_lev)
+		bits |= U_LIGHTLEVEL;
+
+	if (ent->v.scale != ENTSCALE_DEFAULT && ent->v.scale != 0)
+		bits |= U_SCALE;
+
+	//johnfitz -- alpha
+	if (pr_alpha_supported)
+	{
+		eval_t	*val;
+		val = GetEdictFieldValue(ent, "alpha");
+		if (val)
+			ent->alpha = ENTALPHA_ENCODE(val->_float);
+	}
+
+	//don't send invisible entities unless they have effects
+	if (ent->alpha == ENTALPHA_ZERO && !ent->v.effects)
+		return true;
+	//johnfitz
+
+	//johnfitz -- PROTOCOL_FITZQUAKE
+	if (sv.protocol != PROTOCOL_NETQUAKE)
+	{
+		if (ent->baseline.alpha != ent->alpha) bits |= U_ALPHA;
+		if (bits & U_FRAME && (int)ent->v.frame & 0xFF00) bits |= U_FRAME2;
+		if (bits & U_MODEL && (int)ent->v.modelindex & 0xFF00) bits |= U_MODEL2;
+		if (ent->sendinterval) bits |= U_LERPFINISH;
+		if (bits >= 65536) bits |= U_EXTEND1;
+		if (bits >= 16777216) bits |= U_EXTEND2;
+	}
+	//johnfitz
+
+	if (e >= 256)
+		bits |= U_LONGENTITY;
+
+	if (bits >= 256)
+		bits |= U_MOREBITS;
+
+//
+// write the message
+//
+	MSG_WriteByte (msg, bits | U_SIGNAL);
+
+	if (bits & U_MOREBITS)
+		MSG_WriteByte (msg, bits>>8);
+
+	//johnfitz -- PROTOCOL_FITZQUAKE
+	if (bits & U_EXTEND1)
+		MSG_WriteByte(msg, bits>>16);
+	if (bits & U_EXTEND2)
+		MSG_WriteByte(msg, bits>>24);
+	//johnfitz
+
+	if (bits & U_LONGENTITY)
+		MSG_WriteShort (msg,e);
+	else
+		MSG_WriteByte (msg,e);
+
+	if (bits & U_MODEL)
+		MSG_WriteByte (msg,	ent->v.modelindex);
+	if (bits & U_FRAME)
+		MSG_WriteByte (msg, ent->v.frame);
+	if (bits & U_COLORMAP)
+		MSG_WriteByte (msg, ent->v.colormap);
+	if (bits & U_SKIN)
+		MSG_WriteByte (msg, ent->v.skin);
+	if (bits & U_EFFECTS)
+		MSG_WriteShort (msg, ent->v.effects);
+	if (bits & U_ORIGIN1)
+		MSG_WriteCoord (msg, ent->v.origin[0], sv.protocolflags);
+	if (bits & U_ANGLE1)
+		MSG_WriteAngle(msg, ent->v.angles[0], sv.protocolflags);
+	if (bits & U_ORIGIN2)
+		MSG_WriteCoord (msg, ent->v.origin[1], sv.protocolflags);
+	if (bits & U_ANGLE2)
+		MSG_WriteAngle(msg, ent->v.angles[1], sv.protocolflags);
+	if (bits & U_ORIGIN3)
+		MSG_WriteCoord (msg, ent->v.origin[2], sv.protocolflags);
+	if (bits & U_ANGLE3)
+		MSG_WriteAngle(msg, ent->v.angles[2], sv.protocolflags);
+
+	// NZP START
+	if (bits & U_LIGHTLEVEL)
+		MSG_WriteByte(msg, ent->v.light_lev);
+	// NZP END
+
+	if (bits & U_SCALE)
+		MSG_WriteByte(msg, ENTSCALE_ENCODE(ent->v.scale));
+
+	//johnfitz -- PROTOCOL_FITZQUAKE
+	if (bits & U_ALPHA)
+		MSG_WriteByte(msg, ent->alpha);
+	if (bits & U_FRAME2)
+		MSG_WriteByte(msg, (int)ent->v.frame >> 8);
+	if (bits & U_MODEL2)
+		MSG_WriteByte(msg, (int)ent->v.modelindex >> 8);
+	if (bits & U_LERPFINISH)
+		MSG_WriteByte(msg, (byte)(Q_rint((ent->v.nextthink-sv.time)*255)));
+	//johnfitz
+
+	return true;
+}
+
+// entities nearer than this are "near" (sent every frame); beyond it they're "far"
+// and round-robin across frames if a packet fills, so nothing stays invisible.
+#define SV_PRIORITY_NEAR_DIST	1500.0
+
+/*
+=============
+SV_WriteEntitiesToClient -- NZP priority + round-robin
+
+PVS-visible entities are classified into tiers (viewer, other players, near,
+far). The important tiers are written first EVERY frame so players and nearby
+threats/pickups are never delayed behind distant world props; the far tail
+round-robins from a per-client cursor so a full packet can't starve any entity.
 =============
 */
 void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 {
-	int		e, i;
-	int		bits;
+	static int	vis_ent[MAX_EDICTS];
+	static byte	vis_tier[MAX_EDICTS];
+	static int	order[MAX_EDICTS];
+	static int	sv_rr_cursor[MAX_SCOREBOARD];
+	int		e, i, oi;
+	int		numvis, numorder, nfar, far_start_oi, rr_start, wt, clnum;
 	byte	*pvs;
-	vec3_t	org;
-	float	miss;
+	vec3_t	org, delta;
 	edict_t	*ent;
 
 // find the client's PVS
 	VectorAdd (clent->v.origin, clent->v.view_ofs, org);
 	pvs = SV_FatPVS (org, sv.worldmodel);
 
-// send over all entities (excpet the client) that touch the pvs
+	clnum = NUM_FOR_EDICT(clent) - 1;
+	if (clnum < 0 || clnum >= MAX_SCOREBOARD)
+		clnum = 0;
+
+// PASS 1 -- cull to PVS-visible entities and classify each into a priority tier
+	numvis = 0;
 	ent = NEXT_EDICT(sv.edicts);
 	for (e=1 ; e<sv.num_edicts ; e++, ent = NEXT_EDICT(ent))
 	{
-		
 		if (ent->v.effects == EF_NODRAW) //sB adding back NODRAW for limbs
 			continue;
 
@@ -598,174 +872,99 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
 			if (sv.protocol == PROTOCOL_NETQUAKE && (int)ent->v.modelindex & 0xFF00)
 				continue;
 
-			// ignore if not touching a PV leaf
-			for (i=0 ; i < ent->num_leafs ; i++)
-				if (pvs[ent->leafnums[i] >> 3] & (1 << (ent->leafnums[i]&7) ))
-					break;
-			
-			// ericw -- added ent->num_leafs < MAX_ENT_LEAFS condition.
-			//
-			// if ent->num_leafs == MAX_ENT_LEAFS, the ent is visible from too many leafs
-			// for us to say whether it's in the PVS, so don't try to vis cull it.
-			// this commonly happens with rotators, because they often have huge bboxes
-			// spanning the entire map, or really tall lifts, etc.
-			if (i == ent->num_leafs && ent->num_leafs < MAX_ENT_LEAFS)
-				continue;		// not visible
+			// hardpoint beacons (objective markers) draw through walls -- send
+			// them regardless of PVS so they're visible across the whole map.
+			if (!((int)ent->v.effects & EF_HARDPOINT))
+			{
+				// ignore if not touching a PV leaf
+				for (i=0 ; i < ent->num_leafs ; i++)
+					if (pvs[ent->leafnums[i] >> 3] & (1 << (ent->leafnums[i]&7) ))
+						break;
+
+				// ericw -- if num_leafs == MAX_ENT_LEAFS the ent spans too many leafs
+				// to vis-cull (huge bboxes: rotators, tall lifts), so don't try.
+				if (i == ent->num_leafs && ent->num_leafs < MAX_ENT_LEAFS)
+					continue;		// not visible
+			}
 		}
 
-		//johnfitz -- max size for protocol 15 is 18 bytes, not 16 as originally
-		//assumed here.  And, for protocol 85 the max size is actually 24 bytes.
-		if (msg->cursize + 24 > msg->maxsize)
+		vis_ent[numvis] = e;
+		if (ent == clent)
+			vis_tier[numvis] = 3;					// the viewer
+		else if (e <= svs.maxclients)
+			vis_tier[numvis] = 2;					// other players
+		else if (ent->v.movetype == MOVETYPE_STEP   ||	// AI (zombies/dogs)
+				 ent->v.movetype == MOVETYPE_WALK   ||	// walking actors
+				 ent->v.movetype == MOVETYPE_FLY    ||	// flying AI
+				 ent->v.movetype == MOVETYPE_TOSS   ||	// thrown/dropped items, nades
+				 ent->v.movetype == MOVETYPE_BOUNCE ||
+				 ent->v.movetype == MOVETYPE_FLYMISSILE)
+			vis_tier[numvis] = 1;					// anything that MOVES -> always fresh
+												// every frame, even far away, so its
+												// motion never stutters under load
+		else
 		{
+			// static-ish props (NONE / PUSH): priority by distance, round-robin far.
+			VectorSubtract (ent->v.origin, org, delta);
+			if (DotProduct(delta, delta) < (SV_PRIORITY_NEAR_DIST*SV_PRIORITY_NEAR_DIST))
+				vis_tier[numvis] = 1;				// nearby props
+			else
+				vis_tier[numvis] = 0;				// far world props -> round-robin
+		}
+		numvis++;
+	}
+
+// build the write order: important tiers (3,2,1) in edict order, then the far
+// tier rotated by this client's round-robin cursor.
+	numorder = 0;
+	for (wt = 3 ; wt >= 1 ; wt--)
+		for (i=0 ; i<numvis ; i++)
+			if (vis_tier[i] == wt)
+				order[numorder++] = vis_ent[i];
+
+	far_start_oi = numorder;
+	nfar = 0;
+	for (i=0 ; i<numvis ; i++)
+		if (vis_tier[i] == 0)
+			order[numorder + nfar++] = vis_ent[i];
+
+	rr_start = (nfar > 0) ? (sv_rr_cursor[clnum] % nfar) : 0;
+	if (nfar > 0 && rr_start != 0)
+	{
+		// rotate the far slice in-place so it starts at rr_start
+		static int tmp[MAX_EDICTS];
+		for (i=0 ; i<nfar ; i++)
+			tmp[i] = order[far_start_oi + ((rr_start + i) % nfar)];
+		for (i=0 ; i<nfar ; i++)
+			order[far_start_oi + i] = tmp[i];
+	}
+	numorder += nfar;
+
+// PASS 2 -- write in priority order; on overflow, remember where the far tail
+// stopped so the next frame resumes there.
+	for (oi=0 ; oi<numorder ; oi++)
+	{
+		e = order[oi];
+		ent = EDICT_NUM(e);
+		if (!SV_EmitEntity (e, ent, msg))
+		{
+			if (oi > far_start_oi && nfar > 0)
+				sv_rr_cursor[clnum] = (rr_start + (oi - far_start_oi)) % nfar;
+
 			//johnfitz -- less spammy overflow message
 			if (!dev_overflows.packetsize || dev_overflows.packetsize + CONSOLE_RESPAM_TIME < realtime )
 			{
 				Con_Printf ("Packet overflow!\n");
 				dev_overflows.packetsize = realtime;
 			}
-			goto stats;
 			//johnfitz
+			goto stats;
 		}
-
-// send an update
-		bits = 0;
-
-		for (i=0 ; i<3 ; i++)
-		{
-			miss = ent->v.origin[i] - ent->baseline.origin[i];
-			if ( miss < -0.1 || miss > 0.1 )
-				bits |= U_ORIGIN1<<i;
-		}
-
-		if ( ent->v.angles[0] != ent->baseline.angles[0] )
-			bits |= U_ANGLE1;
-
-		if ( ent->v.angles[1] != ent->baseline.angles[1] )
-			bits |= U_ANGLE2;
-
-		if ( ent->v.angles[2] != ent->baseline.angles[2] )
-			bits |= U_ANGLE3;
-
-		if (ent->v.movetype == MOVETYPE_STEP)
-			bits |= U_STEP;	// don't mess up the step animation
-
-		if (ent->baseline.colormap != ent->v.colormap)
-			bits |= U_COLORMAP;
-
-		if (ent->baseline.skin != ent->v.skin)
-			bits |= U_SKIN;
-
-		if (ent->baseline.frame != ent->v.frame)
-			bits |= U_FRAME;
-
-		if (ent->baseline.effects != ent->v.effects)
-			bits |= U_EFFECTS;
-
-		if (ent->baseline.modelindex != ent->v.modelindex)
-			bits |= U_MODEL;
-
-		if (ent->baseline.light_lev != ent->v.light_lev)
-			bits |= U_LIGHTLEVEL;
-
-		if (ent->v.scale != ENTSCALE_DEFAULT && ent->v.scale != 0)
-			bits |= U_SCALE;
-
-		//johnfitz -- alpha
-		if (pr_alpha_supported)
-		{
-			// TODO: find a cleaner place to put this code
-			eval_t	*val;
-			val = GetEdictFieldValue(ent, "alpha");
-			if (val)
-				ent->alpha = ENTALPHA_ENCODE(val->_float);
-		}
-
-		//don't send invisible entities unless they have effects
-		if (ent->alpha == ENTALPHA_ZERO && !ent->v.effects)
-			continue;
-		//johnfitz
-
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (sv.protocol != PROTOCOL_NETQUAKE)
-		{
-
-			if (ent->baseline.alpha != ent->alpha) bits |= U_ALPHA;
-			if (bits & U_FRAME && (int)ent->v.frame & 0xFF00) bits |= U_FRAME2;
-			if (bits & U_MODEL && (int)ent->v.modelindex & 0xFF00) bits |= U_MODEL2;
-			if (ent->sendinterval) bits |= U_LERPFINISH;
-			if (bits >= 65536) bits |= U_EXTEND1;
-			if (bits >= 16777216) bits |= U_EXTEND2;
-		}
-		//johnfitz
-
-		if (e >= 256)
-			bits |= U_LONGENTITY;
-
-		if (bits >= 256)
-			bits |= U_MOREBITS;
-
-	//
-	// write the message
-	//
-		MSG_WriteByte (msg, bits | U_SIGNAL);
-
-		if (bits & U_MOREBITS)
-			MSG_WriteByte (msg, bits>>8);
-
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (bits & U_EXTEND1)
-			MSG_WriteByte(msg, bits>>16);
-		if (bits & U_EXTEND2)
-			MSG_WriteByte(msg, bits>>24);
-		//johnfitz
-
-		if (bits & U_LONGENTITY)
-			MSG_WriteShort (msg,e);
-		else
-			MSG_WriteByte (msg,e);
-
-		if (bits & U_MODEL)
-			MSG_WriteByte (msg,	ent->v.modelindex);
-		if (bits & U_FRAME)
-			MSG_WriteByte (msg, ent->v.frame);
-		if (bits & U_COLORMAP)
-			MSG_WriteByte (msg, ent->v.colormap);
-		if (bits & U_SKIN)
-			MSG_WriteByte (msg, ent->v.skin);
-		if (bits & U_EFFECTS)
-			MSG_WriteShort (msg, ent->v.effects);
-		if (bits & U_ORIGIN1)
-			MSG_WriteCoord (msg, ent->v.origin[0], sv.protocolflags);
-		if (bits & U_ANGLE1)
-			MSG_WriteAngle(msg, ent->v.angles[0], sv.protocolflags);
-		if (bits & U_ORIGIN2)
-			MSG_WriteCoord (msg, ent->v.origin[1], sv.protocolflags);
-		if (bits & U_ANGLE2)
-			MSG_WriteAngle(msg, ent->v.angles[1], sv.protocolflags);
-		if (bits & U_ORIGIN3)
-			MSG_WriteCoord (msg, ent->v.origin[2], sv.protocolflags);
-		if (bits & U_ANGLE3)
-			MSG_WriteAngle(msg, ent->v.angles[2], sv.protocolflags);
-
-		// NZP START
-		if (bits & U_LIGHTLEVEL)
-			MSG_WriteByte(msg, ent->v.light_lev);
-		// NZP END
-
-		if (bits & U_SCALE)
-			MSG_WriteByte(msg, ENTSCALE_ENCODE(ent->v.scale));
-
-		//johnfitz -- PROTOCOL_FITZQUAKE
-		if (bits & U_ALPHA)
-			MSG_WriteByte(msg, ent->alpha);
-		if (bits & U_FRAME2)
-			MSG_WriteByte(msg, (int)ent->v.frame >> 8);
-		if (bits & U_MODEL2)
-			MSG_WriteByte(msg, (int)ent->v.modelindex >> 8);
-		if (bits & U_LERPFINISH)
-			MSG_WriteByte(msg, (byte)(Q_rint((ent->v.nextthink-sv.time)*255)));
-		//johnfitz
 	}
+
+	// everything fit this frame -- start the far tail fresh next time
+	if (nfar > 0)
+		sv_rr_cursor[clnum] = 0;
 
 	//johnfitz -- devstats
 stats:
@@ -892,7 +1091,8 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (sv.protocol != PROTOCOL_NETQUAKE)
 	{
-		if (bits & SU_WEAPON && SV_ModelIndex(PR_GetString(ent->v.weaponmodel)) & 0xFF00) bits |= SU_WEAPON2;
+		// send high byte whenever weapon model index >255, not just on weapon change
+		if (SV_ModelIndex(PR_GetString(ent->v.weaponmodel)) & 0xFF00) bits |= SU_WEAPON2;
 		if ((int)ent->v.currentammo & 0xFF00) bits |= SU_AMMO2;
 		if (bits & SU_WEAPONFRAME && (int)ent->v.weaponframe & 0xFF00) bits |= SU_WEAPONFRAME2;
 		if (bits & SU_WEAPON && ent->alpha != ENTALPHA_DEFAULT) bits |= SU_WEAPONALPHA; //for now, weaponalpha = client entity alpha
@@ -1005,10 +1205,24 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
 	MSG_WriteByte (msg, ent->v.insta_icon);
 	MSG_WriteByte (msg, ent->v.progress_bar);
 
-	MSG_WriteByte (msg, SV_ModelIndex(PR_GetString(ent->v.weapon2model)));
+	// 16-bit: akimbo 2nd-model index can exceed 255 (a byte truncated it, vanishing
+	// the left gun). Paired with MSG_ReadShort in CL_ParseClientdata.
+	MSG_WriteShort (msg, SV_ModelIndex(PR_GetString(ent->v.weapon2model)));
 	MSG_WriteByte (msg, ent->v.weapon2skin);
 	MSG_WriteByte (msg, ent->v.weapon2frame);
 	MSG_WriteByte (msg, ent->v.currentmag2);
+
+	// Grenade trajectory preview: send grenade_aiming state
+	{
+		eval_t *val = GetEdictFieldValue(ent, "grenade_aiming");
+		MSG_WriteByte (msg, val ? (int)val->_float : 0);
+	}
+
+	// Skull Ball: charge meter level 0-100 (0 when not charging / other modes)
+	{
+		eval_t *val = GetEdictFieldValue(ent, "skullball_charge_meter");
+		MSG_WriteByte (msg, val ? (int)val->_float : 0);
+	}
 
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (bits & SU_WEAPON2)
@@ -1037,8 +1251,17 @@ qboolean SV_SendClientDatagram (client_t *client)
 	msg.cursize = 0;
 
 	//johnfitz -- if client is nonlocal, use smaller max size so packets aren't fragmented
+	// NZP -- raised from the fixed 1400 to a tunable size so zombie hordes fit in a
+	// remote client's datagram (else joined players see nothing); LDN tolerates fragmentation.
 	if (strcmp(NET_QSocketGetAddressString(client->netconnection), "LOCAL") != 0)
-		msg.maxsize = DATAGRAM_MTU;
+	{
+		int mtu = (int)sv_datagram_mtu.value;
+		if (mtu < DATAGRAM_MTU)
+			mtu = DATAGRAM_MTU;			// never go below the stock 1400 floor
+		if (mtu > MAX_DATAGRAM - 16)
+			mtu = MAX_DATAGRAM - 16;		// stay within the send buffer
+		msg.maxsize = mtu;
+	}
 	//johnfitz
 
 	MSG_WriteByte (&msg, svc_time);
@@ -1104,7 +1327,7 @@ void SV_UpdateToReliableMessages (void)
 				MSG_WriteShort (&client->message, host_client->edict->v.kills);
 			}
 
-			host_client->old_points = host_client->edict->v.points;
+			host_client->old_kills = host_client->edict->v.kills;
 		}
 	}
 
@@ -1409,7 +1632,7 @@ void SV_SaveSpawnparms (void)
 
 	// call the progs to get default spawn parms for the new client
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
-		PR_ExecuteProgram (pr_global_struct->SetChangeParms);
+		PR_ExecuteProgramNamed (pr_global_struct->SetChangeParms, "SetChangeParms");
 		for (j=0 ; j<NUM_SPAWN_PARMS ; j++)
 			host_client->spawn_parms[j] = (&pr_global_struct->parm1)[j];
 	}
@@ -1514,6 +1737,17 @@ void SV_SpawnServer (const char *server)
 	sv.time = 1.0;
 
 	q_strlcpy (sv.name, server, sizeof(sv.name));
+
+	// real map: drop cam state so the player spawns normally and the load shows
+	if (!strstr(server, "ndu_cam"))
+	{
+		extern cvar_t cam_tour;
+		extern int cam_loading;
+		if (cam_tour.value)
+			Cvar_SetValue("cam_tour", 0);
+		cam_loading = 0;
+	}
+
 	q_snprintf (sv.modelname, sizeof(sv.modelname), "maps/%s.bsp", server);
 	sv.worldmodel = Mod_ForName (sv.modelname, false);
 	if (!sv.worldmodel)
@@ -1536,6 +1770,13 @@ void SV_SpawnServer (const char *server)
 	{
 		sv.model_precache[1+i] = localmodels[i];
 		sv.models[i+1] = Mod_ForName (localmodels[i], false);
+	}
+
+	// precache player.mdl so multiplayer always has a baseline model
+	{
+		int next_slot = 1 + sv.worldmodel->numsubmodels;
+		sv.model_precache[next_slot] = "models/player.mdl";
+		sv.models[next_slot] = Mod_ForName("models/player.mdl", false);
 	}
 
 //

@@ -30,6 +30,93 @@ extern cvar_t gl_zfix; // QuakeSpasm z-fighting fix
 extern int		gl_lightmap_format;
 int		lightmap_bytes;
 
+// per-map lightmap tuning via worldspawn keys "lightscale" (multiply, tames brights)
+// and "lightambient" (add, lifts darks); live cvars r_lightscale/r_lightambient stack on top.
+float	map_lightscale = 1.0;
+float	map_lightambient = 0.0;
+cvar_t	r_lightscale   = {"r_lightscale",   "1", CVAR_ARCHIVE}; // live tuning multiplier (menu slider)
+cvar_t	r_lightambient = {"r_lightambient", "0", CVAR_ARCHIVE}; // live tuning add 0..64 (menu slider)
+
+// gamma shadow-lift: out = 255*(in/255)^gamma, gamma<1 lifts darks without blowing highlights
+float	map_lightgamma = 1.0;
+cvar_t	r_lightgamma = {"r_lightgamma", "1", CVAR_ARCHIVE}; // live shadow-lift (menu slider), <1 lifts darks
+
+// Precomputed 0..255 -> 0..255 gamma LUT, rebuilt only when effgamma changes.
+static byte  lightgamma_lut[256];
+static float lightgamma_lut_g = -1.0f;
+static void R_UpdateLightGammaLUT (float g)
+{
+	int i;
+	if (g == lightgamma_lut_g)
+		return;
+	lightgamma_lut_g = g;
+	if (g == 1.0f)
+	{
+		for (i = 0; i < 256; i++)
+			lightgamma_lut[i] = (byte)i;
+		return;
+	}
+	for (i = 0; i < 256; i++)
+	{
+		float v = powf (i / 255.0f, g) * 255.0f + 0.5f;
+		lightgamma_lut[i] = (v > 255.0f) ? 255 : (byte)v;
+	}
+}
+
+static void R_ParseLightscale (void)
+{
+	char key[128], value[4096];
+	const char *data;
+
+	map_lightscale = 1.0;   // default: no change
+	map_lightambient = 0.0; // default: no lift
+	map_lightgamma = 1.0;   // default: no shadow lift
+
+	if (!cl.worldmodel || !cl.worldmodel->entities)
+		return;
+
+	data = COM_Parse(cl.worldmodel->entities);
+	if (!data || com_token[0] != '{')
+		return;
+	while (1)
+	{
+		data = COM_Parse(data);
+		if (!data)
+			return;
+		if (com_token[0] == '}')
+			break;
+		if (com_token[0] == '_')
+			strcpy(key, com_token + 1);
+		else
+			strcpy(key, com_token);
+		while (key[0] && key[strlen(key)-1] == ' ')
+			key[strlen(key)-1] = 0;
+		data = COM_Parse(data);
+		if (!data)
+			return;
+		strcpy(value, com_token);
+
+		if (!strcmp("lightscale", key))
+		{
+			map_lightscale = atof(value);
+			if (map_lightscale < 0.0)
+				map_lightscale = 0.0;
+		}
+		else if (!strcmp("lightambient", key))
+		{
+			map_lightambient = atof(value);
+			if (map_lightambient < 0.0)
+				map_lightambient = 0.0;
+		}
+		else if (!strcmp("lightgamma", key))
+		{
+			map_lightgamma = atof(value);
+			if (map_lightgamma < 0.1)
+				map_lightgamma = 0.1;
+		}
+	}
+}
+
 #define	BLOCK_WIDTH	128
 #define	BLOCK_HEIGHT	128
 
@@ -630,8 +717,12 @@ void R_DrawBrushModel (entity_t *e)
 		}
 	}
 
+	// brush-model entities (door-buys, func_wall) are often coplanar with the world wall
+	// behind them and z-fight; a small negative polygon offset biases them toward the camera.
+	GL_PolygonOffset (OFFSET_DECAL);
 	R_DrawTextureChains (clmodel, e, chain_model);
 	R_DrawTextureChains_Water (clmodel, e, chain_model);
+	GL_PolygonOffset (OFFSET_NONE);
 
 	glPopMatrix ();
 }
@@ -903,6 +994,19 @@ void BuildSurfaceDisplayList (msurface_t *fa)
 
 		poly->verts[i][5] = s;
 		poly->verts[i][6] = t;
+		{
+			float exposure = 0.0f;
+			if (fa->flags & SURF_DRAWSKY)
+			{
+				exposure = 1.0f;
+			}
+			else
+			{
+				extern qboolean Weather_PointExposedToSkyStatic (vec3_t pos);
+				exposure = Weather_PointExposedToSkyStatic (vec) ? 1.0f : 0.0f;
+			}
+			poly->verts[i][7] = exposure;
+		}
 	}
 
 	//johnfitz -- removed gl_keeptjunctions code
@@ -926,7 +1030,10 @@ void GL_BuildLightmaps (void)
 	qmodel_t	*m;
 
 	memset (allocated, 0, sizeof(allocated));
+	memset (lightmaps, 0, sizeof(lightmaps));	// clear stale pixels so reloads don't bleed prior map's lightmaps
 	last_lightmap_allocated = 0;
+
+	R_ParseLightscale (); // per-map "lightscale" worldspawn key
 
 	r_framecount = 1; // no dlightcache
 
@@ -994,6 +1101,21 @@ void GL_BuildLightmaps (void)
 	if (i >= 64)
 		Con_DWarning ("%i lightmaps exceeds standard limit of 64 (max = %d).\n", i, MAX_LIGHTMAPS);
 	//johnfitz
+
+	// NZP texture-corruption diagnostic: CRC the built lightmap atlas. Same CRC but
+	// corrupt on screen = citron texture-cache bug; different CRC = engine build bug.
+	{
+		int lm, k, bytes;
+		unsigned int crc = 0;
+		for (lm = 0; lm < MAX_LIGHTMAPS; lm++)
+			if (!allocated[lm][0])
+				break;
+		bytes = lm * BLOCK_WIDTH * BLOCK_HEIGHT * lightmap_bytes;
+		for (k = 0; k < bytes; k++)
+			crc = crc * 31u + lightmaps[k];
+		Con_Printf ("LMDBG: %s lightmaps=%d bytes=%d crc=0x%08x\n",
+			cl.worldmodel ? cl.worldmodel->name : "?", lm, bytes, crc);
+	}
 }
 
 /*
@@ -1077,7 +1199,7 @@ void GL_BuildBModelVertexBuffer (void)
 	GL_BindBufferFunc (GL_ARRAY_BUFFER, gl_bmodel_vbo);
 	GL_BufferDataFunc (GL_ARRAY_BUFFER, varray_bytes, varray, GL_STATIC_DRAW);
 	free (varray);
-	
+
 // invalidate the cached bindings
 	GL_ClearBufferBindings ();
 }
@@ -1229,6 +1351,17 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
 
 // bound, invert, and shift
 // store:
+	// combined per-map + live lightmap tuning (contrast compression).
+	float effscale = map_lightscale * r_lightscale.value;
+	int   effambient = (int)(map_lightambient + r_lightambient.value);
+	float effgamma = map_lightgamma * r_lightgamma.value;
+	qboolean lm_gamma = (effgamma != 1.0f);
+	qboolean lm_tuned = (effscale != 1.0f) || (effambient != 0);
+	int shift;
+
+	if (effgamma < 0.1f) effgamma = 0.1f;
+	R_UpdateLightGammaLUT (effgamma);
+
 	switch (gl_lightmap_format)
 	{
 	case GL_RGBA:
@@ -1238,21 +1371,31 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
 		{
 			for (j=0 ; j<smax ; j++)
 			{
-				if (gl_overbright.value)
+				shift = gl_overbright.value ? 8 : 7;
+				r = *bl++ >> shift;
+				g = *bl++ >> shift;
+				b = *bl++ >> shift;
+				if (lm_tuned)
 				{
-					r = *bl++ >> 8;
-					g = *bl++ >> 8;
-					b = *bl++ >> 8;
+					r = (int)(r * effscale) + effambient;
+					g = (int)(g * effscale) + effambient;
+					b = (int)(b * effscale) + effambient;
+					if (r < 0) r = 0;
+					if (g < 0) g = 0;
+					if (b < 0) b = 0;
 				}
-				else
+				if (r > 255) r = 255;
+				if (g > 255) g = 255;
+				if (b > 255) b = 255;
+				if (lm_gamma)
 				{
-					r = *bl++ >> 7;
-					g = *bl++ >> 7;
-					b = *bl++ >> 7;
+					r = lightgamma_lut[r];
+					g = lightgamma_lut[g];
+					b = lightgamma_lut[b];
 				}
-				*dest++ = (r > 255)? 255 : r;
-				*dest++ = (g > 255)? 255 : g;
-				*dest++ = (b > 255)? 255 : b;
+				*dest++ = r;
+				*dest++ = g;
+				*dest++ = b;
 				*dest++ = 255;
 			}
 		}
@@ -1264,21 +1407,31 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
 		{
 			for (j=0 ; j<smax ; j++)
 			{
-				if (gl_overbright.value)
+				shift = gl_overbright.value ? 8 : 7;
+				r = *bl++ >> shift;
+				g = *bl++ >> shift;
+				b = *bl++ >> shift;
+				if (lm_tuned)
 				{
-					r = *bl++ >> 8;
-					g = *bl++ >> 8;
-					b = *bl++ >> 8;
+					r = (int)(r * effscale) + effambient;
+					g = (int)(g * effscale) + effambient;
+					b = (int)(b * effscale) + effambient;
+					if (r < 0) r = 0;
+					if (g < 0) g = 0;
+					if (b < 0) b = 0;
 				}
-				else
+				if (r > 255) r = 255;
+				if (g > 255) g = 255;
+				if (b > 255) b = 255;
+				if (lm_gamma)
 				{
-					r = *bl++ >> 7;
-					g = *bl++ >> 7;
-					b = *bl++ >> 7;
+					r = lightgamma_lut[r];
+					g = lightgamma_lut[g];
+					b = lightgamma_lut[b];
 				}
-				*dest++ = (b > 255)? 255 : b;
-				*dest++ = (g > 255)? 255 : g;
-				*dest++ = (r > 255)? 255 : r;
+				*dest++ = b;
+				*dest++ = g;
+				*dest++ = r;
 				*dest++ = 255;
 			}
 		}

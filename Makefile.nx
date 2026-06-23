@@ -65,6 +65,7 @@ SOURCEFILES	:=\
 	source/gl_fog.c \
 	source/gl_rmisc.c \
 	source/r_part.c \
+	source/r_weather.c \
 	source/r_world.c \
 	source/gl_screen.c \
 	source/gl_sky.c \
@@ -240,8 +241,8 @@ $(BUILD):
 clean:
 	@echo clean ...
 	@rm -fr $(BUILD)/nx
-	@rm $(BUILD)/*.o
-	@rm $(BUILD)/*.d
+	@rm -f $(BUILD)/*.o
+	@rm -f $(BUILD)/*.d
 
 
 #---------------------------------------------------------------------------------
@@ -258,7 +259,7 @@ all	:	$(OUTPUT).pfs0 $(OUTPUT).nro
 	mkdir -p nx/exefs
 	mv *.o nx/objs/
 	mv *.d nx/objs/
-	mv exefs/* nx/exefs/*
+	mv exefs/* nx/exefs/ 2>/dev/null || true
 	mv nzportable.lst nx/objs/
 	mv nzportable.map nx/objs/
 	mv ../nzportable.nacp nx/

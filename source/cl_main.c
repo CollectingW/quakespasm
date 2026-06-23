@@ -39,7 +39,7 @@ cvar_t	cfg_unbindall = {"cfg_unbindall", "1", CVAR_ARCHIVE};
 
 cvar_t	lookspring = {"lookspring","0", CVAR_ARCHIVE};
 cvar_t	lookstrafe = {"lookstrafe","0", CVAR_ARCHIVE};
-cvar_t	sensitivity = {"sensitivity","3", CVAR_ARCHIVE};
+cvar_t	sensitivity = {"sensitivity","7", CVAR_ARCHIVE};
 
 cvar_t	m_pitch = {"m_pitch","0.022", CVAR_ARCHIVE};
 cvar_t	m_yaw = {"m_yaw","0.022", CVAR_ARCHIVE};
@@ -69,6 +69,8 @@ extern cvar_t 	motioncam;
 extern cvar_t 	gyromode;
 extern cvar_t 	gyrosensx;
 extern cvar_t 	gyrosensy;
+extern cvar_t 	in_rumble;
+extern cvar_t 	in_rumble_scale;
 
 /*
 =====================
@@ -85,6 +87,9 @@ void CL_ClearState (void)
 	memset (&cl, 0, sizeof(cl));
 
 	SZ_Clear (&cls.message);
+
+	cranked_hud_active = 0;
+	turret_countdown = 0;
 
 // clear other arrays
 	memset (cl_dlights, 0, sizeof(cl_dlights));
@@ -593,8 +598,11 @@ void CL_RelinkEntities (void)
 				vec3_t tempangles;
 				float forward_offset, up_offset, right_offset;
 
+				extern float cl_peek_flashroll;
+
 				VectorAdd(cl.viewangles,CWeaponRot,tempangles);
 				VectorAdd(tempangles,cl.gun_kick,tempangles);
+				tempangles[ROLL] += cl_peek_flashroll;	// rotate the flash offset with the leaned barrel
 
 				AngleVectors (tempangles, v_forward, v_right, v_up);
 				VectorCopy (cl_entities[cl.viewentity].origin, smokeorg);
@@ -614,6 +622,22 @@ void CL_RelinkEntities (void)
 				VectorMA (smokeorg, right_offset, v_right ,smokeorg);
 				VectorAdd(smokeorg,CWeaponOffset,smokeorg);
 				QMB_MuzzleFlash (smokeorg);
+
+				// Real muzzle light: a short warm flash at the barrel when firing a firearm.
+				// Excludes energy/non-bullet weapons (ray guns, wunderwaffe, panzer, flamethrower).
+				switch (cl.stats[STAT_ACTIVEWEAPON]) {
+				case W_RAY: case W_PORTER: case W_TESLA: case W_DG3:
+				case W_PANZER: case W_LONGINUS: case W_M2: case W_FIW:
+					break;
+				default:
+					dl = CL_AllocDlight (cl.viewentity);
+					VectorCopy (smokeorg, dl->origin);	// at the barrel, so it lights the gun + immediate surroundings
+					dl->radius = 70 + (rand()&15);		// small/localized so it doesn't flood the room
+					dl->die = cl.time + 0.05;
+					dl->color[0] = 1.0; dl->color[1] = 0.7; dl->color[2] = 0.35;	// warm gunfire
+					dl->decay = 700;
+					break;
+				}
 			}
 		}
 		if (ent->effects & EF_BRIGHTLIGHT)
@@ -836,8 +860,16 @@ void CL_RelinkEntities (void)
 		if ( ent->effects & EF_NODRAW )
 			continue;
 
-		if (i == cl.viewentity && !chase_active.value)
-			continue;
+		if (i == cl.viewentity)
+		{
+			if (!chase_active.value)
+				continue;
+			
+			vec3_t diff;
+			VectorSubtract(r_refdef.vieworg, cl.viewent.origin, diff);
+			if (VectorLength(diff) < 25.0f)
+				continue;
+		}
 
 		if (cl_numvisedicts < MAX_VISEDICTS)
 		{
@@ -1059,7 +1091,9 @@ void CL_Init (void)
 	Cvar_RegisterVariable(&gyromode);
 	Cvar_RegisterVariable(&gyrosensx);
 	Cvar_RegisterVariable(&gyrosensy);
-	
+	Cvar_RegisterVariable(&in_rumble);
+	Cvar_RegisterVariable(&in_rumble_scale);
+
 	Cvar_RegisterVariable (&cl_alwaysrun);
 
 	Cvar_RegisterVariable (&m_pitch);

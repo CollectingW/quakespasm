@@ -232,6 +232,7 @@ typedef void (APIENTRYP QS_PFNGLUNIFORM1IPROC) (GLint location, GLint v0);
 typedef void (APIENTRYP QS_PFNGLUNIFORM1FPROC) (GLint location, GLfloat v0);
 typedef void (APIENTRYP QS_PFNGLUNIFORM3FPROC) (GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
 typedef void (APIENTRYP QS_PFNGLUNIFORM4FPROC) (GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
+typedef void (APIENTRYP QS_PFNGLUNIFORMMATRIX4FVPROC) (GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 
 extern QS_PFNGLCREATESHADERPROC GL_CreateShaderFunc;
 extern QS_PFNGLDELETESHADERPROC GL_DeleteShaderFunc;
@@ -256,6 +257,7 @@ extern QS_PFNGLUNIFORM1IPROC GL_Uniform1iFunc;
 extern QS_PFNGLUNIFORM1FPROC GL_Uniform1fFunc;
 extern QS_PFNGLUNIFORM3FPROC GL_Uniform3fFunc;
 extern QS_PFNGLUNIFORM4FPROC GL_Uniform4fFunc;
+extern QS_PFNGLUNIFORMMATRIX4FVPROC GL_UniformMatrix4fvFunc;
 extern	qboolean	gl_glsl_able;
 extern	qboolean	gl_glsl_gamma_able;
 extern	qboolean	gl_glsl_alias_able;
@@ -359,6 +361,9 @@ void R_MarkLights (dlight_t *light, int num, mnode_t *node);
 void R_InitParticles (void);
 void R_DrawParticles (void);
 void CL_RunParticles (void);
+void R_DrawWeather (void);	// rain (r_weather.c)
+void Weather_NewMap (void);	// NZP
+void Weather_Init (void);	// NZP
 void R_ClearParticles (void);
 
 void R_TranslatePlayerSkin (int playernum);
@@ -378,6 +383,7 @@ void GL_BuildLightmaps (void);
 void GL_DeleteBModelVertexBuffer (void);
 void GL_BuildBModelVertexBuffer (void);
 void GLMesh_LoadVertexBuffers (void);
+void GLMesh_EnsureVertexBuffer (qmodel_t *m, const aliashdr_t *hdr);
 void GLMesh_DeleteVertexBuffers (void);
 void R_RebuildAllLightmaps (void);
 

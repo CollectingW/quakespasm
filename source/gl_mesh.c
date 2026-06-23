@@ -304,10 +304,10 @@ void GL_MakeAliasModelDisplayLists (qmodel_t *m, aliashdr_t *hdr)
 	int		count; //johnfitz -- precompute texcoords for padded skins
 	int		*loadcmds; //johnfitz
 
-	//johnfitz -- padded skins
-	hscale = (float)hdr->skinwidth/(float)TexMgr_PadConditional(hdr->skinwidth);
-	vscale = (float)hdr->skinheight/(float)TexMgr_PadConditional(hdr->skinheight);
-	//johnfitz
+	// NZP/citron: skins are resampled to fill the full texture (not padded), so UVs
+	// need no scaling. (Was skinwidth/PadConditional for the old pad path.)
+	hscale = 1.0f;
+	vscale = 1.0f;
 
 	aliasmodel = m;
 	paliashdr = hdr;	// (aliashdr_t *)Mod_Extradata (m);
@@ -529,12 +529,8 @@ static void GLMesh_LoadVertexBuffer (qmodel_t *m, const aliashdr_t *hdr)
 // fill in the ST coords at the end of the buffer
 	{
 		meshst_t *st;
-		float hscale, vscale;
-
-		//johnfitz -- padded skins
-		hscale = (float)hdr->skinwidth/(float)TexMgr_PadConditional(hdr->skinwidth);
-		vscale = (float)hdr->skinheight/(float)TexMgr_PadConditional(hdr->skinheight);
-		//johnfitz
+		// NZP/citron: skins are resampled to fill the texture (not padded) -> no UV scale
+		float hscale = 1.0f, vscale = 1.0f;
 
 		st = (meshst_t *) (vbodata + m->vbostofs);
 		for (f = 0; f < hdr->numverts_vbo; f++)
@@ -544,16 +540,56 @@ static void GLMesh_LoadVertexBuffer (qmodel_t *m, const aliashdr_t *hdr)
 		}
 	}
 
-// upload vertexes buffer
-	GL_DeleteBuffersFunc (1, &m->meshvbo);
-	GL_GenBuffersFunc (1, &m->meshvbo);
-	GL_BindBufferFunc (GL_ARRAY_BUFFER, m->meshvbo);
-	GL_BufferDataFunc (GL_ARRAY_BUFFER, totalvbosize, vbodata, GL_STATIC_DRAW);
+// upload vertex buffer with verify-and-retry: citron intermittently fails the upload
+// leaving a garbage VBO ("vertex explosion"), so read it back and re-upload until it matches.
+	{
+		extern PFNGLGETBUFFERSUBDATAPROC GL_GetBufferSubDataFunc;
+		byte	*verify = GL_GetBufferSubDataFunc ? (byte *) malloc (totalvbosize) : NULL;
+		int	attempt;
+
+		for (attempt = 0; attempt < 4; attempt++)
+		{
+			GL_DeleteBuffersFunc (1, &m->meshvbo);
+			GL_GenBuffersFunc (1, &m->meshvbo);
+			GL_BindBufferFunc (GL_ARRAY_BUFFER, m->meshvbo);
+			GL_BufferDataFunc (GL_ARRAY_BUFFER, totalvbosize, vbodata, GL_STATIC_DRAW);
+
+			if (!verify)
+				break;	// can't verify -- accept the upload
+
+			memset (verify, 0, totalvbosize);
+			GL_GetBufferSubDataFunc (GL_ARRAY_BUFFER, 0, totalvbosize, verify);
+			if (!memcmp (verify, vbodata, totalvbosize))
+				break;	// GPU buffer matches what we sent -- good
+
+			Con_Printf ("GLMesh: VBO upload corrupt for %s (attempt %d), retrying\n",
+				    m->name, attempt + 1);
+		}
+		if (verify)
+			free (verify);
+	}
 
 	free (vbodata);
 
 // invalidate the cached bindings
 	GL_ClearBufferBindings ();
+}
+
+/*
+================
+GLMesh_EnsureVertexBuffer -- NZP
+
+Rebuild a single model's VBO if it's missing (meshvbo==0). Called right before
+the GLSL alias draw so a model that lost its VBO across a map reload is fixed in
+place, instead of either rendering garbage (the "vertex explosion") OR falling
+back to the immediate-mode path (which corrupts on some GL drivers -> cyan/black
+wedges across the whole view).
+================
+*/
+void GLMesh_EnsureVertexBuffer (qmodel_t *m, const aliashdr_t *hdr)
+{
+	if (gl_glsl_alias_able && m && m->meshvbo == 0)
+		GLMesh_LoadVertexBuffer (m, hdr);
 }
 
 /*

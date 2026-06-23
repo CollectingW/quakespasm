@@ -353,12 +353,15 @@ void Key_Console (int key)
 			if (cls.state == ca_disconnected)
 				SCR_UpdateScreen (); // force an update, because the command may take some time
 			
-			// for clientside cmds							
-			if (cls.state == ca_connected)
+			// run NZP QC console commands (addmoney / 99999 / etc.)
+			if (cls.state == ca_connected && sv.active && sv_player)
 			{
 #ifndef VITA
-				pr_global_struct->CMD_STRING = (key_lines[edit_line-1]+1 - pr_strings);
-				PR_ExecuteProgram (pr_global_struct->ParseClientCommand);
+				// PR_SetEngineString: old (ptr - pr_strings) math gave a bogus string_t
+				pr_global_struct->time = sv.time;
+				pr_global_struct->self = EDICT_TO_PROG(sv_player);
+				pr_global_struct->CMD_STRING = PR_SetEngineString(key_lines[edit_line-1]+1);
+				PR_ExecuteProgramNamed (pr_global_struct->ParseClientCommand, "ParseClientCommand");
 #endif // VITA
 			}
 			return;
@@ -608,8 +611,73 @@ void Key_EndChat (void)
 	chat_buffer[0] = 0;
 }
 
+// open co-op text chat with the on-screen keyboard (Select/minus button).
+void Chat_Begin (void)
+{
+	key_dest = key_message;
+	chat_team = false;
+	chat_bufferlen = 0;
+	chat_buffer[0] = 0;
+	OSK_toggle = 1;
+	osk_buffer[0] = 0;
+	osk_pos_x = 0;
+	osk_pos_y = 0;
+}
+
 void Key_Message (int key)
 {
+	// Switch: type the message with the on-screen keyboard. A = pick char,
+	// X = backspace, dpad = move, Y = send to everyone, B/Start = cancel.
+	if (OSK_toggle)
+	{
+		switch (key)
+		{
+		case K_ABUTTON:
+			if (MAX_CHAR_LINE > (int)strlen(osk_buffer)) {
+				char *selected_line = osk_text2[osk_pos_y];
+				char selected_char[2];
+				selected_char[0] = selected_line[1+(2*osk_pos_x)];
+				if (selected_char[0] == '\t')
+					selected_char[0] = ' ';
+				selected_char[1] = '\0';
+				strcat(osk_buffer, selected_char);
+			}
+			return;
+		case K_XBUTTON:
+			if (strlen(osk_buffer) > 0)
+				osk_buffer[strlen(osk_buffer)-1] = '\0';
+			return;
+		case K_RIGHTARROW:
+			if (++osk_pos_x > MAX_X) osk_pos_x = 0;
+			return;
+		case K_LEFTARROW:
+			if (--osk_pos_x < 0) osk_pos_x = MAX_X;
+			return;
+		case K_DOWNARROW:
+			if (++osk_pos_y > MAX_Y) osk_pos_y = 0;
+			return;
+		case K_UPARROW:
+			if (--osk_pos_y < 0) osk_pos_y = MAX_Y;
+			return;
+		case K_YBUTTON:
+			if (strlen(osk_buffer) > 0) {
+				Cbuf_AddText("say \"");
+				Cbuf_AddText(osk_buffer);
+				Cbuf_AddText("\"\n");
+			}
+			OSK_toggle = 0;
+			Key_EndChat();
+			return;
+		case K_BBUTTON:
+		case K_ESCAPE:
+			OSK_toggle = 0;
+			Key_EndChat();
+			return;
+		default:
+			return;
+		}
+	}
+
 	switch (key)
 	{
 	case K_ENTER:
@@ -1126,6 +1194,14 @@ void Key_Event (int key, qboolean down)
 			Sys_Error ("Bad key_dest");
 		}
 
+		return;
+	}
+
+// Select/minus opens co-op text chat (on-screen keyboard) during gameplay.
+	if (key == K_SELECT)
+	{
+		if (down && key_dest == key_game && cls.state == ca_connected && cl.maxclients > 1)
+			Chat_Begin ();
 		return;
 	}
 

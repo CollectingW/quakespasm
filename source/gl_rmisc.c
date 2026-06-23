@@ -25,6 +25,23 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 
 //johnfitz -- new cvars
+extern cvar_t gl_motionblur;	// motion blur master (defined in gl_rmain.c)
+extern cvar_t r_mblur_object;	// per-object motion-blur shutter (defined in gl_rmain.c)
+extern cvar_t r_mblur_zombie;	// zombie motion-blur shutter (defined in gl_rmain.c)
+extern cvar_t r_mblur_viewmodel;	// gun/hands motion-blur shutter (defined in gl_rmain.c)
+extern cvar_t r_mblur_world;	// world/camera motion-blur amount (defined in gl_rmain.c)
+extern cvar_t r_mblur_rain;	// rain motion-blur shutter (defined in gl_rmain.c)
+extern cvar_t r_mblur_occlude;	// object world-occlusion mask toggle (defined in gl_rmain.c)
+extern cvar_t r_mblur_scenedepth;	// scene-depth capture toggle, off on citron (defined in gl_rmain.c)
+extern cvar_t r_mblur_debug;	// velocity-buffer debug viz (defined in gl_rmain.c)
+extern cvar_t r_ssaa;		// supersampling AA (defined in gl_rmain.c)
+extern cvar_t r_bloom;		// bloom (defined in gl_rmain.c)
+extern cvar_t r_vignette;	// vignette (defined in gl_rmain.c)
+extern cvar_t r_cg_contrast;
+extern cvar_t r_cg_saturation;
+extern cvar_t r_tonemap;
+extern cvar_t r_filmgrain;
+extern cvar_t r_ssao;
 extern cvar_t r_stereo;
 extern cvar_t r_stereodepth;
 extern cvar_t r_clearcolor;
@@ -34,6 +51,14 @@ extern cvar_t gl_fullbrights;
 extern cvar_t gl_farclip;
 extern cvar_t gl_overbright;
 extern cvar_t gl_overbright_models;
+extern cvar_t r_lightscale;   // live lightmap tuning (defined in r_brush.c)
+extern cvar_t r_lightambient;
+extern cvar_t r_lightgamma;   // live shadow-lift (gamma) for HL-BSP dark surfaces
+extern cvar_t r_modeldirlight; // real environmental light direction for models (r_alias.c)
+extern cvar_t r_modeldirtilt;  // up-bias for the model light direction
+extern cvar_t r_modeldirsmooth; // per-entity time-smoothing of model light dir
+extern cvar_t r_modelspecworld; // gloss key light sky-vs-world blend
+extern cvar_t r_modelspecfwd;   // push gloss key light toward the muzzle
 extern cvar_t r_waterquality;
 extern cvar_t r_oldwater;
 extern cvar_t r_waterwarp;
@@ -253,6 +278,17 @@ void R_Init (void)
 	Cvar_RegisterVariable (&gl_overbright);
 	Cvar_SetCallback (&gl_fullbrights, GL_Fullbrights_f);
 	Cvar_SetCallback (&gl_overbright, GL_Overbright_f);
+	Cvar_RegisterVariable (&r_lightscale);   // live lightmap tuning
+	Cvar_RegisterVariable (&r_lightambient);
+	Cvar_RegisterVariable (&r_lightgamma);   // live shadow-lift (gamma)
+	Cvar_SetCallback (&r_lightscale, GL_Overbright_f);   // rebuild lightmaps on change
+	Cvar_SetCallback (&r_lightambient, GL_Overbright_f);
+	Cvar_SetCallback (&r_lightgamma, GL_Overbright_f);
+	Cvar_RegisterVariable (&r_modeldirlight);   // real environmental light direction for models
+	Cvar_RegisterVariable (&r_modeldirtilt);    // up-bias for model light direction
+	Cvar_RegisterVariable (&r_modeldirsmooth);  // anti-jitter time-smoothing
+	Cvar_RegisterVariable (&r_modelspecworld);  // gloss key light sky-vs-world blend
+	Cvar_RegisterVariable (&r_modelspecfwd);    // push gloss key light toward muzzle
 	Cvar_RegisterVariable (&gl_overbright_models);
 	Cvar_RegisterVariable (&r_lerpmodels);
 	Cvar_RegisterVariable (&r_lerpmove);
@@ -267,6 +303,28 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_telealpha);
 	Cvar_RegisterVariable (&r_slimealpha);
 	Cvar_RegisterVariable (&r_scale);
+	Cvar_RegisterVariable (&gl_motionblur);
+	Cvar_RegisterVariable (&r_mblur_object);
+	Cvar_RegisterVariable (&r_mblur_zombie);
+	Cvar_RegisterVariable (&r_mblur_viewmodel);
+	Cvar_RegisterVariable (&r_mblur_world);
+	Cvar_RegisterVariable (&r_mblur_rain);
+	Cvar_RegisterVariable (&r_mblur_occlude);
+	Cvar_RegisterVariable (&r_mblur_scenedepth);
+	Cvar_RegisterVariable (&r_mblur_debug);
+	Cvar_RegisterVariable (&r_ssaa);
+	Cvar_RegisterVariable (&r_bloom);
+	Cvar_RegisterVariable (&r_vignette);
+	Cvar_RegisterVariable (&r_cg_contrast);
+	Cvar_RegisterVariable (&r_cg_saturation);
+	Cvar_RegisterVariable (&r_tonemap);
+	Cvar_RegisterVariable (&r_filmgrain);
+	Cvar_RegisterVariable (&r_ssao);
+	{
+		extern cvar_t r_quality; extern void R_QualityPreset_f (cvar_t *var);
+		Cvar_RegisterVariable (&r_quality);
+		Cvar_SetCallback (&r_quality, R_QualityPreset_f);
+	}
 	Cvar_SetCallback (&r_lavaalpha, R_SetLavaalpha_f);
 	Cvar_SetCallback (&r_telealpha, R_SetTelealpha_f);
 	Cvar_SetCallback (&r_slimealpha, R_SetSlimealpha_f);
@@ -277,6 +335,7 @@ void R_Init (void)
 
 	Sky_Init (); //johnfitz
 	Fog_Init (); //johnfitz
+	Weather_Init (); //rain cvar
 }
 
 /*
@@ -430,7 +489,8 @@ void R_NewMap (void)
 
 	GL_BuildLightmaps ();
 	GL_BuildBModelVertexBuffer ();
-	//ericw -- no longer load alias models into a VBO here, it's done in Mod_LoadAliasModel
+	// rebuild every alias VBO each map load; cached models otherwise keep deleted buffers (vertex explosion)
+	GLMesh_LoadVertexBuffers ();
 
 	r_framecount = 0; //johnfitz -- paranoid?
 	r_visframecount = 0; //johnfitz -- paranoid?
@@ -440,6 +500,10 @@ void R_NewMap (void)
 	R_ParseWorldspawn (); //ericw -- wateralpha, lavaalpha, telealpha, slimealpha in worldspawn
 
 	load_subdivide_size = gl_subdivide_size.value; //johnfitz -- is this the right place to set this?
+
+	{ extern void TexMgr_DiagReport (void); TexMgr_DiagReport (); }
+
+	Weather_NewMap (); //decide if this map rains (NDU)
 }
 
 /*
@@ -479,7 +543,7 @@ void D_FlushCaches (void)
 {
 }
 
-static GLuint gl_programs[16];
+static GLuint gl_programs[128];
 static int gl_num_programs;
 
 static qboolean GL_CheckShader (GLuint shader)

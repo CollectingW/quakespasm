@@ -1115,7 +1115,7 @@ void CL_ParseClientdata (void)
 	if (cl.progress_bar != i)
 		cl.progress_bar = i;
 
-	i = MSG_ReadByte ();
+	i = MSG_ReadShort ();	// 16-bit: see SV_WriteClientdataToMessage (akimbo 2nd model index can exceed 255)
 	if (cl.stats[STAT_WEAPON2] != i)
 		cl.stats[STAT_WEAPON2] = i;
 
@@ -1131,6 +1131,15 @@ void CL_ParseClientdata (void)
 	if (cl.stats[STAT_CURRENTMAG2] != i)
 		cl.stats[STAT_CURRENTMAG2] = i;
 
+	// Grenade trajectory preview state
+	i = MSG_ReadByte ();
+	if (cl.stats[STAT_HOLDING_GRENADE] != i)
+		cl.stats[STAT_HOLDING_GRENADE] = i;
+
+	// Skull Ball charge meter (0-100)
+	i = MSG_ReadByte ();
+	if (cl.stats[STAT_SKULLCHARGE] != i)
+		cl.stats[STAT_SKULLCHARGE] = i;
 
 	//johnfitz -- PROTOCOL_FITZQUAKE
 	if (bits & SU_WEAPON2)
@@ -1228,7 +1237,8 @@ void CL_ParseWeaponFire (void)
 {
 	vec3_t		kick;
 	return_time = (double)6/MSG_ReadLong ();
-	crosshair_spread_time = return_time + sv.time;
+	// cl.time not sv.time: networked clients have no local server, sv.time stays 0 (recoil never decays)
+	crosshair_spread_time = return_time + cl.time;
 
 	kick[0] = (float)(MSG_ReadCoord (cl.protocolflags)/3.75f);
 	kick[1] = (float)(MSG_ReadCoord (cl.protocolflags)/3.75f);
@@ -1571,7 +1581,17 @@ void CL_ParseServerMessage (void)
 		//johnfitz
 
 		case svc_hitmark:
-			Hitmark_Time = sv.time + 0.2;
+			{
+				extern qboolean Hitmark_IsKill;
+				qboolean nk = (MSG_ReadByte() != 0);	// 1 = kill
+				if (nk) {
+					Hitmark_IsKill = true;
+					Hitmark_Time = cl.time + 0.30;	// kill: red, held a touch longer
+				} else if (!(Hitmark_IsKill && Hitmark_Time > cl.time)) {
+					Hitmark_IsKill = false;		// plain hit -> white, but don't stomp an active red kill marker
+					Hitmark_Time = cl.time + 0.2;
+				}
+			}
 			break;
 
 		case svc_weaponfire:
@@ -1582,17 +1602,8 @@ void CL_ParseServerMessage (void)
 			CL_ParseLimbUpdate();
 			break;
 		case svc_achievement:
-		
-#ifdef VITA
-
+			// was VITA-only; the Switch now handles achievement unlocks too.
 			HUD_Parse_Achievement (MSG_ReadByte());
-			
-#else
-
-    MSG_ReadByte(); // cypress -- stop breaking protocol
-
-#endif // VITA
-			
 			break;
 		case svc_maxammo:
 			domaxammo = true;
@@ -1601,10 +1612,10 @@ void CL_ParseServerMessage (void)
 			crosshair_pulse_grenade = true;
 			break;
 		case svc_bettyprompt:
-			bettyprompt_time = sv.time + 4;
+			bettyprompt_time = cl.time + 4;
 			break;
 		case svc_playername:
-			nameprint_time = sv.time + 11;
+			nameprint_time = cl.time + 11;
 			strcpy(player_name, MSG_ReadString());
 			break;
 
@@ -1622,12 +1633,30 @@ void CL_ParseServerMessage (void)
 			break;
 
 		case svc_screenflash:
+			// cl.time, not sv.time -- a networked client's sv.time is frozen, so the
+			// flash gate would never expire (permanent black on joined players).
 			screenflash_color = MSG_ReadByte();
-			screenflash_duration = sv.time + MSG_ReadByte();
+			screenflash_duration = cl.time + MSG_ReadByte();
 			screenflash_type = MSG_ReadByte();
 			screenflash_worktime = 0;
-			screenflash_starttime = sv.time;
+			screenflash_starttime = cl.time;
 			break;
+
+		case svc_downedfilter:
+			// Last-stand death screen filter intensity (0..255). 0 clears it.
+			downed_filter_target = (float)MSG_ReadByte() / 255.0f;
+			break;
+
+		case svc_turrettimer:
+			turret_countdown = MSG_ReadByte();
+			break;
+
+		case svc_crankedstatus:
+			cranked_hud_active = 1;
+			cranked_hud_level = MSG_ReadByte();
+			cranked_hud_secs = MSG_ReadByte();
+			break;
+
 
 		//case svc_bspdecal:
 		//	CL_ParseBSPDecal ();

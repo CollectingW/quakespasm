@@ -37,6 +37,12 @@ static GLint	gl_hardware_maxsize;
 int numgltextures;
 static gltexture_t	*active_gltextures, *free_gltextures;
 gltexture_t	gltextures[2048];
+
+cvar_t r_texdiag = {"r_texdiag", "0", CVAR_ARCHIVE};
+static unsigned td_srccrc;
+static int td_uploads, td_reuse, td_glerr, td_loadnum;
+static unsigned td_freed[4096];
+static int td_nfreed;
 gltexture_t		*notexture, *nulltexture;
 
 unsigned int d_8to24table[256];
@@ -444,6 +450,28 @@ void TexMgr_FreeTexturesForOwner (qmodel_t *owner)
 	}
 }
 
+static qboolean map_loading = false;
+
+/*
+================
+TexMgr_BeginMapLoad
+================
+*/
+void TexMgr_BeginMapLoad (void)
+{
+	map_loading = true;
+}
+
+/*
+================
+TexMgr_EndMapLoad
+================
+*/
+void TexMgr_EndMapLoad (void)
+{
+	map_loading = false;
+}
+
 /*
 ================
 TexMgr_DeleteTextureObjects
@@ -632,6 +660,7 @@ void TexMgr_Init (void)
 	// palette
 	TexMgr_LoadPalette ();
 
+	Cvar_RegisterVariable (&r_texdiag);
 	Cvar_RegisterVariable (&gl_max_size);
 	Cvar_RegisterVariable (&gl_picmip);
 	Cvar_RegisterVariable (&gl_texture_anisotropy);
@@ -1113,6 +1142,50 @@ static byte *TexMgr_PadImageH (byte *in, int width, int height, byte padbyte)
 	return data;
 }
 
+static unsigned *TexMgr_PadImage32W (unsigned *in, int width, int height, unsigned padpixel)
+{
+	int i, j, outwidth;
+	unsigned *out, *data;
+
+	if (width == TexMgr_Pad(width))
+		return in;
+
+	outwidth = TexMgr_Pad(width);
+
+	out = data = (unsigned *) Hunk_Alloc(outwidth * height * 4);
+
+	for (i = 0; i < height; i++)
+	{
+		for (j = 0; j < width; j++)
+			*out++ = *in++;
+		for (  ; j < outwidth; j++)
+			*out++ = padpixel;
+	}
+
+	return data;
+}
+
+static unsigned *TexMgr_PadImage32H (unsigned *in, int width, int height, unsigned padpixel)
+{
+	int i, srcpix, dstpix;
+	unsigned *out, *data;
+
+	if (height == TexMgr_Pad(height))
+		return in;
+
+	srcpix = width * height;
+	dstpix = width * TexMgr_Pad(height);
+
+	out = data = (unsigned *) Hunk_Alloc(dstpix * 4);
+
+	for (i = 0; i < srcpix; i++)
+		*out++ = *in++;
+	for (     ; i < dstpix; i++)
+		*out++ = padpixel;
+
+	return data;
+}
+
 /*
 ================
 TexMgr_LoadImage32 -- handles 32bit source data
@@ -1122,9 +1195,21 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 {
 	int	internalformat,	miplevel, mipwidth, mipheight, picmip;
 
-	if (!gl_texture_NPOT)
+	if (glt->flags & TEXPREF_PAD)
 	{
-		// resample up
+		if ((int) glt->width < TexMgr_SafeTextureSize(glt->width))
+		{
+			data = TexMgr_PadImage32W (data, glt->width, glt->height, 0);
+			glt->width = TexMgr_Pad(glt->width);
+		}
+		if ((int) glt->height < TexMgr_SafeTextureSize(glt->height))
+		{
+			data = TexMgr_PadImage32H (data, glt->width, glt->height, 0);
+			glt->height = TexMgr_Pad(glt->height);
+		}
+	}
+	else if (!gl_texture_NPOT || glt->width != TexMgr_Pad(glt->width) || glt->height != TexMgr_Pad(glt->height))
+	{
 		data = TexMgr_ResampleTexture (data, glt->width, glt->height, glt->flags & TEXPREF_ALPHA);
 		glt->width = TexMgr_Pad(glt->width);
 		glt->height = TexMgr_Pad(glt->height);
@@ -1155,10 +1240,21 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	GL_Bind (glt);
 	internalformat = (glt->flags & TEXPREF_ALPHA) ? gl_alpha_format : gl_solid_format;
 	glTexImage2D (GL_TEXTURE_2D, 0, internalformat, glt->width, glt->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+	if (r_texdiag.value) {
+		// global counters only -- NO per-texture Con_Printf (it interleaves with GL
+		// uploads and corrupts rendering). Use the red probe (r_texdiag 2) instead.
+		unsigned h = 2166136261u; int i, n = glt->width * glt->height * 4; byte *p = (byte *)data;
+		for (i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+		td_srccrc ^= h + glt->texnum;
+		td_uploads++;
+		for (i = 0; i < td_nfreed; i++) if (td_freed[i] == glt->texnum) { td_reuse++; break; }
+		if (glGetError() != GL_NO_ERROR) td_glerr++;
+	}
 	// upload mipmaps
 	if (glt->flags & TEXPREF_MIPMAP)
 	{
-#ifdef VITA
+#if defined(VITA) || defined(__SWITCH__)
+		// Use hardware mipmap generation on VITA and Switch
 		glGenerateMipmap(GL_TEXTURE_2D);
 #else
 		mipwidth = glt->width;
@@ -1296,7 +1392,7 @@ static void TexMgr_LoadLightmap (gltexture_t *glt, byte *data)
 {
 	// upload it
 	GL_Bind (glt);
-	glTexImage2D (GL_TEXTURE_2D, 0, lightmap_bytes, glt->width, glt->height, 0, gl_lightmap_format, GL_UNSIGNED_BYTE, data);
+	glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, glt->width, glt->height, 0, gl_lightmap_format, GL_UNSIGNED_BYTE, data);
 
 	// set filter modes
 	TexMgr_SetFilterModes (glt);
@@ -1333,13 +1429,18 @@ gltexture_t *TexMgr_LoadImage (qmodel_t *owner, const char *name, int width, int
 	default: /* not reachable but avoids compiler warnings */
 		crc = 0;
 	}
-	if ((flags & TEXPREF_OVERWRITE) && (glt = TexMgr_FindTexture (owner, name)))
+	glt = TexMgr_FindTexture (owner, name);
+	if (glt)
 	{
+		glt->map_used = 1;
 		if (glt->source_crc == crc)
 			return glt;
 	}
 	else
+	{
 		glt = TexMgr_NewTexture ();
+		glt->map_used = 1;
+	}
 
 	// copy data
 	glt->owner = owner;
@@ -1396,34 +1497,37 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants)
 	byte	translation[256];
 	byte	*src, *dst, *data = NULL, *translated;
 	int	mark, size, i;
+	int	tex_width = glt->source_width;
+	int	tex_height = glt->source_height;
+	enum srcformat tex_format = glt->source_format;
 //
 // get source data
 //
 	mark = Hunk_LowMark ();
 
 	if (glt->source_file[0] && glt->source_offset)
-	{
-		//lump inside file
-		long size;
-		FILE *f;
-		COM_FOpenFile(glt->source_file, &f, NULL);
-		if (!f)
-			goto invalid;
-		fseek (f, glt->source_offset, SEEK_CUR);
-		size = (long) (glt->source_width * glt->source_height);
-		/* should be SRC_INDEXED, but no harm being paranoid:  */
-		if (glt->source_format == SRC_RGBA)
-			size *= 4;
-		else if (glt->source_format == SRC_LIGHTMAP)
-			size *= lightmap_bytes;
-		data = (byte *) Hunk_Alloc (size);
-		fread (data, 1, size, f);
-		fclose (f);
-	}
-	else if (glt->source_file[0] && !glt->source_offset)
-		data = Image_LoadImage (glt->source_file, (int *)&glt->source_width, (int *)&glt->source_height); //simple file
-	else if (!glt->source_file[0] && glt->source_offset)
-		data = (byte *) glt->source_offset; //image in memory
+		{
+			//lump inside file
+			long size;
+			FILE *f;
+			COM_FOpenFile(glt->source_file, &f, NULL);
+			if (!f)
+				goto invalid;
+			fseek (f, glt->source_offset, SEEK_CUR);
+			size = (long) (glt->source_width * glt->source_height);
+			/* should be SRC_INDEXED, but no harm being paranoid:  */
+			if (glt->source_format == SRC_RGBA)
+				size *= 4;
+			else if (glt->source_format == SRC_LIGHTMAP)
+				size *= lightmap_bytes;
+			data = (byte *) Hunk_Alloc (size);
+			fread (data, 1, size, f);
+			fclose (f);
+		}
+		else if (glt->source_file[0] && !glt->source_offset)
+			data = Image_LoadImage (glt->source_file, &tex_width, &tex_height); //simple file
+		else if (!glt->source_file[0] && glt->source_offset)
+			data = (byte *) glt->source_offset; //image in memory
 
 	if (!data)
 	{
@@ -1433,8 +1537,8 @@ invalid:
 		return;
 	}
 
-	glt->width = glt->source_width;
-	glt->height = glt->source_height;
+	glt->width = tex_width;
+	glt->height = tex_height;
 //
 // apply shirt and pants colors
 //
@@ -1442,7 +1546,7 @@ invalid:
 // if existing shirt and pants colors are -1,-1, don't bother colormapping
 	if (shirt > -1 && pants > -1)
 	{
-		if (glt->source_format == SRC_INDEXED)
+		if (tex_format == SRC_INDEXED)
 		{
 			glt->shirt = shirt;
 			glt->pants = pants;
@@ -1493,7 +1597,7 @@ invalid:
 //
 // upload it
 //
-	switch (glt->source_format)
+	switch (tex_format)
 	{
 	case SRC_INDEXED:
 		TexMgr_LoadImage8 (glt, data);
@@ -1645,6 +1749,7 @@ from our per-TMU cached texture binding table.
 */
 static void GL_DeleteTexture (gltexture_t *texture)
 {
+	if (r_texdiag.value && td_nfreed < 4096) td_freed[td_nfreed++] = texture->texnum;
 	glDeleteTextures (1, &texture->texnum);
 #ifndef VITA
 	if (texture->texnum == currenttexture[0]) currenttexture[0] = GL_UNUSED_TEXTURE;
@@ -1663,6 +1768,16 @@ make real glBindTexture calls.
 Call this after changing the binding outside of GL_Bind.
 ================
 */
+void TexMgr_DiagReport (void)
+{
+	if (!r_texdiag.value) return;
+	Con_Printf ("[TEXDIAG] load#%d uploads=%d reuse=%d glerr=%d srccrc=%08x active=%d\n",
+		++td_loadnum, td_uploads, td_reuse, td_glerr, td_srccrc, numgltextures);
+	Sys_Printf ("[TEXDIAG] load#%d uploads=%d reuse=%d glerr=%d srccrc=%08x active=%d\n",
+		td_loadnum, td_uploads, td_reuse, td_glerr, td_srccrc, numgltextures);
+	td_uploads = td_reuse = td_glerr = 0; td_srccrc = 0; td_nfreed = 0;
+}
+
 void GL_ClearBindings(void)
 {
 #ifndef VITA

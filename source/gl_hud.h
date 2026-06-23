@@ -28,7 +28,7 @@ void HUD_Init (void);
 void HUD_NewMap (void);
 
 //achievement stuff
-#define MAX_ACHIEVEMENTS 5//23
+#define MAX_ACHIEVEMENTS 26	// ... + Skull Ball (22-23) + Locked In/Deadeye (24) + Packed Or Nothing (25)
 typedef struct achievement_list_s
 {
     qpic_t      *img;
@@ -49,5 +49,14 @@ extern double screenflash_duration;
 extern int screenflash_type;
 extern double screenflash_worktime;
 extern double screenflash_starttime;
+
+extern float downed_filter_target;  // last-stand death filter target intensity (0..1), set by svc_downedfilter
+extern float downed_filter_current; // smoothly-lerped current intensity
+extern int turret_countdown;
+extern int cranked_hud_active;
+extern int cranked_hud_level;
+extern int cranked_hud_secs;
+void HUD_DownedFilter (void);
+
 
 void HUD_Parse_Achievement (int ach);

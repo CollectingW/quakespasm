@@ -1021,6 +1021,10 @@ static void GL_CheckExtensions (void)
 
 	// texture_non_power_of_two
 	//
+#ifdef __SWITCH__
+	gl_texture_NPOT = false;
+	Con_Printf("Switch build: forcing texture_non_power_of_two to false\n");
+#else
 	if (COM_CheckParm("-notexturenpot"))
 		Con_Warning ("texture_non_power_of_two disabled at command line\n");
 	else if (GL_ParseExtensionList(gl_extensions, "GL_ARB_texture_non_power_of_two"))
@@ -1032,6 +1036,7 @@ static void GL_CheckExtensions (void)
 	{
 		Con_Warning ("texture_non_power_of_two not supported\n");
 	}
+#endif
 	
 	// GLSL
 	//

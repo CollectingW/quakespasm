@@ -34,6 +34,54 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define DEFAULT_DENSITY 1.0
 #define DEFAULT_GRAY 0.3
 
+// Fog color presets: 0=Map Default, 1=White, 2=Grey, 3=Black, 4=Red, 5=Green, 6=Blue, 7=Yellow, 8=Purple
+cvar_t r_fog_color = {"r_fog_color", "0", CVAR_ARCHIVE};  // Default to Map fog
+
+// Preset fog colors (RGB values 0-1)
+static float fog_color_presets[][3] = {
+    {-1.0f, -1.0f, -1.0f},  // 0: Map Default (use map fog color, no override)
+    {0.85f, 0.85f, 0.85f},  // 1: White (slight grey to look natural)
+    {0.5f, 0.5f, 0.5f},      // 2: Grey
+    {0.1f, 0.1f, 0.1f},      // 3: Black (slight grey to be visible)
+    {0.8f, 0.2f, 0.2f},      // 4: Red
+    {0.2f, 0.8f, 0.2f},      // 5: Green
+    {0.2f, 0.2f, 0.8f},      // 6: Blue
+    {0.8f, 0.8f, 0.2f},      // 7: Yellow
+    {0.5f, 0.1f, 0.5f},      // 8: Purple
+};
+#define FOG_COLOR_PRESET_COUNT 9
+
+// zombie eye-glow colour (recoloured in the alias shader by intensity). No
+// grey/black -- eyes should pop. Index 0 = Yellow (default).
+cvar_t r_zombie_eyecolor = {"r_zombie_eyecolor", "0", CVAR_ARCHIVE};
+static float zombie_eye_presets[][3] = {
+    {1.00f, 0.78f, 0.10f},  // 0: Yellow (default)
+    {1.00f, 0.00f, 0.00f},  // 1: Red (deep)
+    {0.15f, 1.00f, 0.15f},  // 2: Green
+    {0.03f, 0.15f, 1.00f},  // 3: Blue (deep)
+    {1.00f, 0.38f, 0.00f},  // 4: Orange
+    {0.45f, 0.00f, 1.00f},  // 5: Purple (violet, not pink)
+    {0.10f, 1.00f, 1.00f},  // 6: Cyan
+    {1.00f, 1.00f, 1.00f},  // 7: White
+    {1.00f, 0.30f, 0.62f},  // 8: Pink
+};
+#define ZOMBIE_EYE_PRESET_COUNT 9
+
+void R_GetZombieEyeColor (float *out)
+{
+    int p = (int)r_zombie_eyecolor.value;
+    if (p < 0 || p >= ZOMBIE_EYE_PRESET_COUNT)
+        p = 0;
+    out[0] = zombie_eye_presets[p][0];
+    out[1] = zombie_eye_presets[p][1];
+    out[2] = zombie_eye_presets[p][2];
+}
+
+// Default fog parameters when preset is active but map has no fog
+#define PRESET_FOG_START 200.0f
+#define PRESET_FOG_END   1500.0f
+#define PRESET_FOG_DENSITY 0.038f
+
 //extern refdef_t r_refdef;
 
 float density = 1.0;
@@ -55,6 +103,11 @@ float old_blue;
 float fade_time; //duration of fade
 float fade_done; //time when fade will be done
 
+// Forward declarations
+float Fog_GetStart(void);
+float Fog_GetEnd(void);
+float Fog_GetDensity(void);
+
 /*
 =============
 Fog_Update
@@ -67,6 +120,13 @@ void Fog_Update (float start, float end, float red, float green, float blue, flo
 	if (start <= 0.01f || end <= 0.01f) {
 		start = 0.0f;
 		end = 0.0f;
+	}
+
+	if (red > 1.0f || green > 1.0f || blue > 1.0f)
+	{
+		red /= 255.0f;
+		green /= 255.0f;
+		blue /= 255.0f;
 	}
 
 	//save previous settings for fade
@@ -271,6 +331,12 @@ void Fog_ParseWorldspawn (void)
 		if (!strcmp("fog", key))
 		{
 			sscanf(value, "%f %f %f %f %f", &fog_start, &fog_end, &fog_red, &fog_green, &fog_blue);
+			if (fog_red > 1.0f || fog_green > 1.0f || fog_blue > 1.0f)
+			{
+				fog_red /= 255.0f;
+				fog_green /= 255.0f;
+				fog_blue /= 255.0f;
+			}
 		}
 
 		fog_density_gl = ((fog_start / fog_end))/3.5;
@@ -280,6 +346,10 @@ void Fog_ParseWorldspawn (void)
 		fog_start = 0.0f;
 		fog_end = 0.0f;
 	}
+
+	Con_Printf ("FOGDBG: %s start=%.0f end=%.0f density=%.5f shaderuni=%.6f\n",
+		cl.worldmodel ? cl.worldmodel->name : "?",
+		fog_start, fog_end, fog_density_gl, fog_density_gl / 64.0f);
 }
 
 /*
@@ -295,7 +365,9 @@ float *Fog_GetColor (void)
 
 	float f;
 	int i;
+	int preset = (int)r_fog_color.value;
 
+	// First, get the base fog color (from map or fade)
 	if (fade_done > cl.time)
 	{
 		f = (fade_done - cl.time) / fade_time;
@@ -316,8 +388,13 @@ float *Fog_GetColor (void)
 	for (i=0;i<3;i++)
 		c[i] = (float)(Q_rint(c[i] * 255)) / 255.0f;
 
-	for (i = 0; i < 3; i++)
-		c[i] /= 64.0;
+	// If a fog color preset is selected (1-8), replace the color
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT)
+	{
+		c[0] = fog_color_presets[preset][0];
+		c[1] = fog_color_presets[preset][1];
+		c[2] = fog_color_presets[preset][2];
+	}
 
 	return c;
 }
@@ -333,14 +410,22 @@ returns current density of fog
 float Fog_GetDensity (void)
 {
 	float f;
+	float density_val;
+	int preset = (int)r_fog_color.value;
 
 	if (fade_done > cl.time)
 	{
 		f = (fade_done - cl.time) / fade_time;
-		return f * old_density + (1.0 - f) * fog_density_gl;
+		density_val = f * old_density + (1.0 - f) * fog_density_gl;
 	}
 	else
-		return fog_density_gl;
+		density_val = fog_density_gl;
+
+	// If a color preset is active and map has no fog (density near 0), use default density
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT && (fog_start <= 0.01f || fog_end <= 0.01f))
+		return PRESET_FOG_DENSITY;
+
+	return density_val;
 }
 
 /*
@@ -385,12 +470,12 @@ void Fog_SetupFrame (void)
 
 	glFogfv(GL_FOG_COLOR, Fog_GetColor());
 #ifdef VITA
-	glFogf(GL_FOG_DENSITY, fog_density_gl);
+	glFogf(GL_FOG_DENSITY, Fog_GetDensity());
 #else
-	glFogf(GL_FOG_DENSITY, fog_density_gl / 64.0);
+	glFogf(GL_FOG_DENSITY, Fog_GetDensity() / 64.0);
 #endif // VITA
-	glFogf(GL_FOG_START, fog_start);
-	glFogf(GL_FOG_END, fog_end);
+	glFogf(GL_FOG_START, Fog_GetStart());
+	glFogf(GL_FOG_END, Fog_GetEnd());
 	//glFogf(GL_FOG_COLOR, *c);
 
 	//if(s == 0 || e < 0)
@@ -406,14 +491,22 @@ returns current start of fog
 float Fog_GetStart (void)
 {
 	float f;
+	float start_val;
+	int preset = (int)r_fog_color.value;
 
 	if (fade_done > cl.time)
 	{
 		f = (fade_done - cl.time) / fade_time;
-		return f * old_start + (1.0 - f) * fog_start;
+		start_val = f * old_start + (1.0 - f) * fog_start;
 	}
 	else
-		return fog_start;
+		start_val = fog_start;
+
+	// If a color preset is active and map has no fog, use default start
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT && start_val <= 0.01f)
+		return PRESET_FOG_START;
+
+	return start_val;
 }
 
 /*
@@ -425,14 +518,22 @@ returns current end of fog
 float Fog_GetEnd (void)
 {
 	float f;
+	float end_val;
+	int preset = (int)r_fog_color.value;
 
 	if (fade_done > cl.time)
 	{
 		f = (fade_done - cl.time) / fade_time;
-		return f * old_start + (1.0 - f) * fog_end;
+		end_val = f * old_end + (1.0 - f) * fog_end;
 	}
 	else
-		return fog_end;
+		end_val = fog_end;
+
+	// If a color preset is active and map has no fog, use default end
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT && end_val <= 0.01f)
+		return PRESET_FOG_END;
+
+	return end_val;
 }
 
 /*
@@ -444,7 +545,14 @@ called before drawing stuff that should be fogged
 */
 void Fog_EnableGFog (void)
 {
-	if (!(Fog_GetStart() == 0) || !(Fog_GetEnd() <= 0))
+	int preset = (int)r_fog_color.value;
+	float start = Fog_GetStart();
+	float end = Fog_GetEnd();
+
+	// Enable fog if: preset is active OR map has fog
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT)
+		glEnable(GL_FOG);
+	else if (start > 0.01f || end > 0.01f)
 		glEnable(GL_FOG);
 }
 
@@ -457,7 +565,14 @@ called after drawing stuff that should be fogged
 */
 void Fog_DisableGFog (void)
 {
-	if (!(Fog_GetStart() == 0) || !(Fog_GetEnd() <= 0))
+	int preset = (int)r_fog_color.value;
+	float start = Fog_GetStart();
+	float end = Fog_GetEnd();
+
+	// Disable fog if it was enabled
+	if (preset > 0 && preset < FOG_COLOR_PRESET_COUNT)
+		glDisable(GL_FOG);
+	else if (start > 0.01f || end > 0.01f)
 		glDisable(GL_FOG);
 }
 
@@ -532,6 +647,11 @@ void Fog_Init (void)
 
 	//Cvar_RegisterVariable (&r_vfog);
 
+	// Register fog color preset cvar
+	// 0=Map Default, 1=White, 2=Grey, 3=Black, 4=Red, 5=Green, 6=Blue, 7=Yellow, 8=Purple
+	Cvar_RegisterVariable (&r_fog_color);
+	Cvar_RegisterVariable (&r_zombie_eyecolor);
+
 	//set up global fog
 	/*
 	fog_density_gl = DEFAULT_DENSITY;
@@ -539,7 +659,7 @@ void Fog_Init (void)
 	fog_green = DEFAULT_GRAY;
 	fog_blue = DEFAULT_GRAY;
 	*/
-	
+
 	fog_start = 0;
 	fog_end = -1;
 	fog_red = 0.5;
@@ -560,5 +680,5 @@ ericw -- moved from Fog_Init, state that needs to be setup when a new context is
 */
 void Fog_SetupState (void)
 {
-	glFogi(GL_FOG_MODE, GL_EXP2);
+	glFogi(GL_FOG_MODE, GL_LINEAR);
 }

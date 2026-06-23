@@ -45,6 +45,8 @@ cvar_t r_fastsky = {"r_fastsky", "0", CVAR_NONE};
 cvar_t r_sky_quality = {"r_sky_quality", "12", CVAR_NONE};
 cvar_t r_skyalpha = {"r_skyalpha", "1", CVAR_NONE};
 cvar_t r_skyfog = {"r_skyfog","0.5",CVAR_NONE};
+cvar_t r_skybright = {"r_skybright","1",CVAR_ARCHIVE}; // dim the skybox (1=full, lower=darker)
+cvar_t r_skygradient = {"r_skygradient","0",CVAR_ARCHIVE}; // 1=flat night gradient (no cube/box), 0=textured skybox (default)
 
 int		skytexorder[6] = {0,2,1,3,4,5}; //for skybox
 
@@ -149,14 +151,47 @@ Sky_LoadSkyBox
 ==================
 */
 const char	*suf[6] = {"rt", "bk", "lf", "ft", "up", "dn"};
+
+// Helper to extract just the skybox name from potentially malformed paths
+static void Sky_ExtractSkyboxName(const char *name, char *out, size_t outsize)
+{
+	const char *p;
+	char *ext;
+
+	// Skip any leading path like "gfx/env/"
+	p = strrchr(name, '/');
+	if (p)
+		p++;
+	else
+		p = name;
+
+	q_strlcpy(out, p, outsize);
+
+	// Strip common image extensions
+	ext = strrchr(out, '.');
+	if (ext && (!q_strcasecmp(ext, ".png") || !q_strcasecmp(ext, ".tga") ||
+	            !q_strcasecmp(ext, ".jpg") || !q_strcasecmp(ext, ".jpeg")))
+		*ext = '\0';
+}
+
 void Sky_LoadSkyBox (const char *name)
 {
 	int		i, mark, width, height;
 	char	filename[MAX_OSPATH];
+	char	cleanname[64];
 	byte	*data;
 	qboolean nonefound = true;
 
-	if (strcmp(skybox_name, name) == 0)
+	// Extract clean skybox name (handles paths like "gfx/env/CloudyNightSky.png")
+	Sky_ExtractSkyboxName(name, cleanname, sizeof(cleanname));
+
+	if (strstr(cleanname, "town") != NULL || strstr(cl.mapname, "town") != NULL ||
+	    strstr(cleanname, "transit") != NULL || strstr(cl.mapname, "transit") != NULL)
+	{
+		q_strlcpy(cleanname, "ndu", sizeof(cleanname));
+	}
+
+	if (strcmp(skybox_name, cleanname) == 0)
 		return; //no change
 
 	//purge old textures
@@ -168,7 +203,7 @@ void Sky_LoadSkyBox (const char *name)
 	}
 
 	//turn off skybox if sky is set to ""
-	if (name[0] == 0)
+	if (cleanname[0] == 0)
 	{
 		skybox_name[0] = 0;
 		return;
@@ -178,11 +213,15 @@ void Sky_LoadSkyBox (const char *name)
 	for (i=0; i<6; i++)
 	{
 		mark = Hunk_LowMark ();
-		q_snprintf (filename, sizeof(filename), "gfx/env/%s%s", name, suf[i]);
+		q_snprintf (filename, sizeof(filename), "gfx/env/%s%s", cleanname, suf[i]);
 		data = Image_LoadImage (filename, &width, &height);
 		if (data)
 		{
 			skybox_textures[i] = TexMgr_LoadImage (cl.worldmodel, filename, width, height, SRC_RGBA, data, filename, 0, TEXPREF_NONE);
+			// Set texture clamping for skybox to prevent seams
+			GL_Bind(skybox_textures[i]);
+			glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 			nonefound = false;
 		}
 		else
@@ -193,7 +232,39 @@ void Sky_LoadSkyBox (const char *name)
 		Hunk_FreeToLowMark (mark);
 	}
 
-	if (nonefound) // go back to scrolling sky if skybox is totally missing
+	// If requested skybox not found, try fallback to "ndu" (common NZP skybox)
+	if (nonefound)
+	{
+		Con_Printf("Skybox '%s' not found, trying fallback 'ndu'\n", cleanname);
+		for (i=0; i<6; i++)
+		{
+			if (skybox_textures[i] && skybox_textures[i] != notexture)
+				TexMgr_FreeTexture (skybox_textures[i]);
+			skybox_textures[i] = NULL;
+		}
+
+		for (i=0; i<6; i++)
+		{
+			mark = Hunk_LowMark ();
+			q_snprintf (filename, sizeof(filename), "gfx/env/ndu%s", suf[i]);
+			data = Image_LoadImage (filename, &width, &height);
+			if (data)
+			{
+				skybox_textures[i] = TexMgr_LoadImage (cl.worldmodel, filename, width, height, SRC_RGBA, data, filename, 0, TEXPREF_NONE);
+				GL_Bind(skybox_textures[i]);
+				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+				nonefound = false;
+			}
+			else
+			{
+				skybox_textures[i] = notexture;
+			}
+			Hunk_FreeToLowMark (mark);
+		}
+	}
+
+	if (nonefound) // go back to scrolling sky if still nothing found
 	{
 		for (i=0; i<6; i++)
 		{
@@ -205,7 +276,7 @@ void Sky_LoadSkyBox (const char *name)
 		return;
 	}
 
-	strcpy(skybox_name, name);
+	strcpy(skybox_name, cleanname);
 }
 
 /*
@@ -220,11 +291,15 @@ void Sky_NewMap (void)
 	int		i;
 
 	//
-	// initially no sky
+	// initially no sky - free old textures first to prevent leaks
 	//
 	skybox_name[0] = 0;
 	for (i=0; i<6; i++)
+	{
+		if (skybox_textures[i] && skybox_textures[i] != notexture)
+			TexMgr_FreeTexture (skybox_textures[i]);
 		skybox_textures[i] = NULL;
+	}
 	//skyfog = r_skyfog.value;
 
 	//
@@ -317,6 +392,8 @@ void Sky_Init (void)
 	Cvar_RegisterVariable (&r_sky_quality);
 	Cvar_RegisterVariable (&r_skyalpha);
 	Cvar_RegisterVariable (&r_skyfog);
+	Cvar_RegisterVariable (&r_skybright);
+	Cvar_RegisterVariable (&r_skygradient);
 	Cvar_SetCallback (&r_skyfog, R_SetSkyfog_f);
 
 	Cmd_AddCommand ("sky",Sky_SkyCommand_f);
@@ -697,9 +774,10 @@ void DrawSkyFogBlend (float skydepth) {
 	glShadeModel(GL_SMOOTH);
 	glEnable(GL_BLEND);
 
-	float r = MIN(1.0f, fog_red * 0.01f);
-	float g = MIN(1.0f, fog_green * 0.01f);
-	float b = MIN(1.0f, fog_blue * 0.01f);
+	float *fog_c = Fog_GetColor();
+	float r = fog_c[0];
+	float g = fog_c[1];
+	float b = fog_c[2];
 
 	for (int i = -2; i < 2; i++) {
 		for (int j = 0; j < 2; j++) {
@@ -797,6 +875,67 @@ float skyup[5][3] = {
 	{ -1.f, 0.f, 0.f }
 };
 
+/*
+==============
+Sky_DrawGradient -- NZP: flat night-sky gradient instead of a textured cube.
+Draws the 5 sky cube faces with NO texture and a vertical (world-Z) color ramp:
+dark blue at the horizon -> near-black at the zenith. Because the color depends
+only on height, it is continuous across the cube edges, so there are no visible
+corners/seams -- it reads as a smooth sky, not a box. Scaled by r_skybright.
+==============
+*/
+void Sky_DrawGradient (void)
+{
+	int 	i;
+	vec3_t 	v;
+	float 	skydepth = 1000.0f;
+	float	b = r_skybright.value;
+	const float hor[3] = {0.10f, 0.13f, 0.21f}; // horizon (cool dark blue)
+	const float zen[3] = {0.01f, 0.02f, 0.05f}; // zenith (near black)
+
+	if (b < 0.0f) b = 0.0f;
+	if (b > 1.0f) b = 1.0f;
+
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glDepthMask(GL_FALSE);
+	glDisable(GL_DEPTH_TEST);
+
+	for (i = 0; i < 5; i++)
+	{
+		float dot = DotProduct(skynormals[i], vpn);
+		if (dot < -0.9f) continue;	// keep corner-visible faces (see Sky_DrawSkyBox)
+
+		// the four corner offset signs for this face (rt, up)
+		const float rs[4] = {-1, -1,  1,  1};
+		const float us[4] = {-1,  1,  1, -1};
+		int c;
+		glBegin(GL_QUADS);
+		for (c = 0; c < 4; c++)
+		{
+			float th;
+			int k;
+			for (k = 0; k < 3; k++)
+				v[k] = r_origin[k] + (skynormals[i][k] + rs[c]*skyrt[i][k] + us[c]*skyup[i][k]) * skydepth;
+			// height blend: -skydepth..+skydepth (relative to view) -> 0..1
+			th = ((v[2] - r_origin[2]) / skydepth + 1.0f) * 0.5f;
+			if (th < 0.0f) th = 0.0f;
+			if (th > 1.0f) th = 1.0f;
+			glColor4f((hor[0] + (zen[0]-hor[0])*th) * b,
+					  (hor[1] + (zen[1]-hor[1])*th) * b,
+					  (hor[2] + (zen[2]-hor[2])*th) * b, 1.0f);
+			glVertex3fv (v);
+		}
+		glEnd();
+	}
+
+	glColor4f(1, 1, 1, 1);
+	glEnable(GL_TEXTURE_2D);
+	glDepthMask(GL_TRUE);
+	glEnable(GL_DEPTH_TEST);
+}
+
 void Sky_DrawSkyBox (void)
 {
 	int 	i, j, k;
@@ -809,6 +948,15 @@ void Sky_DrawSkyBox (void)
 	glDepthMask(GL_FALSE);
 	glDisable(GL_DEPTH_TEST);
 
+	// dim the skybox so the night sky isn't blown out (GL_MODULATE * this color)
+	{
+		float b = r_skybright.value;
+		if (b < 0.0f) b = 0.0f;
+		if (b > 1.0f) b = 1.0f;
+		if (cl.worldmodel && strstr(cl.worldmodel->name, "town")) b *= 0.45f;
+		glColor4f(b, b, b, 1.0f);
+	}
+
 	float skydepth = 1000.0f;
 
 	for(i = 0; i < 5; i++)
@@ -818,8 +966,9 @@ void Sky_DrawSkyBox (void)
 
 		// check if poly needs to be drawn at all
 		float dot = DotProduct(skynormals[i], vpn);
-		// < 0 check would work at fov 90 or less, just guess a value that's high enough?
-		if (dot < -0.25f) continue;
+		// only cull faces fully behind the view -- a tighter test dropped side faces
+		// still visible in the corners at wide FOV, leaving a white gap in the sky
+		if (dot < -0.9f) continue;
 
 		GL_Bind (skybox_textures[skytexorder[i]]);
 
@@ -1142,15 +1291,10 @@ void Sky_DrawSky (void)
 	//
 	Fog_DisableGFog ();
 	glDisable (GL_TEXTURE_2D);
-	/*if (Fog_GetDensity() > 0)
-		glColor3fv (Fog_GetColor());
-	else*/
-	//glColor3fv (skyflatcolor);
-		
-	//glColor3fv (Fog_GetColor());
+	glColor3f (0.05f, 0.06f, 0.09f);
 	Sky_ProcessTextureChains ();
 	Sky_ProcessEntities ();
-	//glColor3f (1, 1, 1);
+	glColor3f (1, 1, 1);
 	glEnable (GL_TEXTURE_2D);
 
 	//
@@ -1161,7 +1305,9 @@ void Sky_DrawSky (void)
 		glDepthFunc(GL_GEQUAL);
 		glDepthMask(0);
 
-		if (skybox_name[0])
+		if (r_skygradient.value)
+			Sky_DrawGradient ();
+		else if (skybox_name[0])
 			Sky_DrawSkyBox ();
 		else
 			Sky_DrawSkyLayers();

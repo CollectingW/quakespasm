@@ -51,6 +51,7 @@ m*_t structures are in-memory
 #define EF_PURPLELIGHT    		4096
 #define EF_RAYRED	 			8196			// red trail for porter x2
 #define EF_RAYGREEN  			16384			// green trail for ray gun
+#define EF_HARDPOINT			32768			// hardpoint beacon -- draw sprite through walls, tint by frame (0=grey/empty, >0=blue/occupied)
 
 
 /*
@@ -141,7 +142,7 @@ typedef struct
 	int			flags;
 } mtexinfo_t;
 
-#define	VERTEXSIZE	7
+#define	VERTEXSIZE	8
 
 typedef struct glpoly_s
 {
@@ -383,6 +384,7 @@ typedef struct {
 	int					commands;	// gl command list with embedded s/t
 	struct gltexture_s	*gltextures[MAX_SKINS][4]; //johnfitz
 	struct gltexture_s	*fbtextures[MAX_SKINS][4]; //johnfitz
+	struct gltexture_s	*spectextures[MAX_SKINS][4]; //specular/gloss map (modelname_0_spec)
 	int					texels[MAX_SKINS];	// only for player skins
 	maliasframedesc_t	frames[1];	// variable sized
 } aliashdr_t;

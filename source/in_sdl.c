@@ -66,39 +66,71 @@ float rumble_tick = 0;
 float rumble_duration;
 u32 target_device;
 
+static float rumble_amp_low, rumble_amp_high;	// held while a pulse is active
+static qboolean rumble_on;
+
 extern PadState gyropad;
 extern HidVibrationValue VibrationValue;
 extern HidVibrationValue VibrationValue_stop;
 extern HidVibrationValue VibrationValues[2];
 extern HidVibrationDeviceHandle VibrationDeviceHandles[2][2];
+extern cvar_t in_rumble;
+extern cvar_t in_rumble_scale;
+
+// re-send the held vibration (jittered) so citron doesn't dedupe it and SDL's
+// 2s auto-expire keeps refreshing -- a single short packet was getting dropped.
+static void IN_RumbleRefresh (void)
+{
+	static int rumble_jitter;
+	rumble_jitter ^= 1;
+	VibrationValue.amp_low  = rumble_amp_low;
+	VibrationValue.amp_high = rumble_amp_high;
+	VibrationValue.freq_low  = 160.0f + (float)rumble_jitter;
+	VibrationValue.freq_high = 320.0f + (float)rumble_jitter;
+	memcpy(&VibrationValues[0], &VibrationValue, sizeof(HidVibrationValue));
+	memcpy(&VibrationValues[1], &VibrationValue, sizeof(HidVibrationValue));
+	hidSendVibrationValues(VibrationDeviceHandles[target_device], VibrationValues, 2);
+}
+
 void IN_StartRumble(int low_frequency, int high_frequency, int duration)
 {
+	if (!in_rumble.value)
+		return;
+
 	target_device = padIsHandheld(&gyropad) ? 0 : 1;
 
-	VibrationValue.amp_low = VibrationValue.amp_high = low_frequency == 0 ? 0.0f : 320.0f;
-    VibrationValue.freq_low = low_frequency == 0 ? 160.0f : (float) low_frequency / 204;
-    VibrationValue.freq_high = high_frequency == 0 ? 320.0f : (float) high_frequency / 204;
+	// low/high are intensities (0..2000 -> amplitude 0..1), hard-clamped so the
+	// actuator is never overdriven.
+	float scale = in_rumble_scale.value;
+	rumble_amp_low  = (low_frequency  / 2000.0f) * scale;
+	rumble_amp_high = (high_frequency / 2000.0f) * scale;
+	if (rumble_amp_low  > 1.0f) rumble_amp_low  = 1.0f; else if (rumble_amp_low  < 0.0f) rumble_amp_low  = 0.0f;
+	if (rumble_amp_high > 1.0f) rumble_amp_high = 1.0f; else if (rumble_amp_high < 0.0f) rumble_amp_high = 0.0f;
 
-	memcpy(&VibrationValues[0], &VibrationValue, sizeof(HidVibrationValue));
-    memcpy(&VibrationValues[1], &VibrationValue, sizeof(HidVibrationValue));
-
-    hidSendVibrationValues(VibrationDeviceHandles[target_device], VibrationValues, 2);
-
+	rumble_on = true;
 	rumble_tick = cl.time;
 	rumble_duration = ((float)duration)/1000;
+	IN_RumbleRefresh ();
 }
 
 void IN_StopRumble (void)
 {
-	if (rumble_tick && (cl.time - rumble_tick > rumble_duration)) {
+	if (!rumble_on)
+		return;
+
+	// expired (or cl.time reset on map reload) -> send stop once
+	if (cl.time - rumble_tick > rumble_duration || cl.time < rumble_tick) {
 		memcpy(&VibrationValues[0], &VibrationValue_stop, sizeof(HidVibrationValue));
 		memcpy(&VibrationValues[1], &VibrationValue_stop, sizeof(HidVibrationValue));
-
 		hidSendVibrationValues(VibrationDeviceHandles[target_device], VibrationValues, 2);
-		//Could also do this with 1 hidSendVibrationValues() call + a larger VibrationValues array.
 		hidSendVibrationValues(VibrationDeviceHandles[1-target_device], VibrationValues, 2);
+		rumble_on = false;
 		rumble_tick = 0;
+		return;
 	}
+
+	// still active -> keep it alive every frame
+	IN_RumbleRefresh ();
 }
 
 #endif // VITA
@@ -612,7 +644,7 @@ static int IN_KeyForControllerButton(SDL_GameControllerButton button)
 		case SDL_CONTROLLER_BUTTON_X: return K_XBUTTON;
 		case SDL_CONTROLLER_BUTTON_Y: return K_YBUTTON;
 #endif
-		case SDL_CONTROLLER_BUTTON_BACK: return K_TAB;
+		case SDL_CONTROLLER_BUTTON_BACK: return K_SELECT;
 		case SDL_CONTROLLER_BUTTON_START: return K_ESCAPE;
 		case SDL_CONTROLLER_BUTTON_LEFTSTICK: return K_LTHUMB;
 		case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return K_RTHUMB;
@@ -694,9 +726,24 @@ void IN_Commands (void)
 	{
 		qboolean newstate = SDL_GameControllerGetButton(joy_active_controller, (SDL_GameControllerButton)i);
 		qboolean oldstate = joy_buttonstate.buttondown[i];
-		
+
 		joy_buttonstate.buttondown[i] = newstate;
-		
+
+		// Direct handling for L3/R3 thumbstick buttons in-game
+		// This bypasses key bindings which may not work reliably
+		if (key_dest == key_game && !oldstate && newstate) {
+			if (i == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
+				// L3: Sprint or shoulder swap when ADS in third-person
+				Cmd_ExecuteString("l3_action", src_command);
+				continue;  // Don't send key event, we handled it
+			}
+			if (i == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
+				// R3: First-person ADS toggle in third-person
+				Cmd_ExecuteString("r3_action", src_command);
+				continue;  // Don't send key event, we handled it
+			}
+		}
+
 		// NOTE: This can cause a reentrant call of IN_Commands, via SCR_ModalMessage when confirming a new game.
 		IN_JoyKeyEvent(oldstate, newstate, IN_KeyForControllerButton((SDL_GameControllerButton)i), &joy_buttontimer[i]);
 	}

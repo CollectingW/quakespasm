@@ -51,6 +51,7 @@ char		*con_text = NULL;
 
 cvar_t		con_notifytime = {"con_notifytime","3",CVAR_NONE};	//seconds
 cvar_t		con_logcenterprint = {"con_logcenterprint", "1", CVAR_NONE}; //johnfitz
+cvar_t		con_autocomplete = {"con_autocomplete","1",CVAR_ARCHIVE};
 
 char		con_lastcenterstring[1024]; //johnfitz
 
@@ -335,6 +336,7 @@ void Con_Init (void)
 
 	Cvar_RegisterVariable (&con_notifytime);
 	Cvar_RegisterVariable (&con_logcenterprint); //johnfitz
+	Cvar_RegisterVariable (&con_autocomplete);
 
 	Cmd_AddCommand ("toggleconsole", Con_ToggleConsole_f);
 	Cmd_AddCommand ("messagemode", Con_MessageMode_f);
@@ -386,7 +388,7 @@ static void Con_Print (const char *txt)
 	if (txt[0] == 1)
 	{
 		mask = 128;		// go to colored text
-		S_LocalSound ("misc/talk.wav");	// play talk wav
+		S_LocalSound ("sounds/misc/talk2.wav");	// chat beep (NZP path; stock "misc/talk.wav" doesn't exist here)
 		txt++;
 	}
 	else if (txt[0] == 2)
@@ -1079,6 +1081,8 @@ Con_DrawNotify
 Draws the last few lines of output transparently over the game top
 ================
 */
+extern int OSK_toggle;			// defined below; needed here for the chat OSK
+extern char osk_buffer[128];
 void Con_DrawNotify (void)
 {
 	int	i, x, v;
@@ -1125,8 +1129,16 @@ void Con_DrawNotify (void)
 			x = 6;
 		}
 
-		text = Key_GetChatBuffer();
-		i = Key_GetChatMsgLen();
+		if (OSK_toggle)	// Switch: live text is the on-screen keyboard buffer
+		{
+			text = osk_buffer;
+			i = (int)strlen(osk_buffer);
+		}
+		else
+		{
+			text = Key_GetChatBuffer();
+			i = Key_GetChatMsgLen();
+		}
 		if (i > con_linewidth - x - 1)
 			text += i - con_linewidth + x + 1;
 
@@ -1140,6 +1152,9 @@ void Con_DrawNotify (void)
 		Draw_Character (x<<3, v, 10 + ((int)(realtime*con_cursorspeed)&1));
 		v += 8;
 
+		if (OSK_toggle)
+			M_OSK_Draw ();
+
 		scr_tileclear_updates = 0; //johnfitz
 	}
 }
@@ -1152,6 +1167,8 @@ The input line scrolls horizontally if typing goes beyond the right edge
 ================
 */
 extern	qpic_t *pic_ovr, *pic_ins; //johnfitz -- new cursor handling
+
+void Con_DrawAutoComplete (void);
 
 void Con_DrawInput (void)
 {
@@ -1176,6 +1193,62 @@ void Con_DrawInput (void)
 		i = key_linepos - ofs;
 		Draw_Pic ((i+1)<<3, vid.conheight - 16, key_insert ? pic_ins : pic_ovr);
 	}
+
+	Con_DrawAutoComplete ();
+}
+
+// live autocomplete dropdown: lists cvars/commands matching the word at the cursor
+#define AC_MAX 10
+void Con_DrawAutoComplete (void)
+{
+	char		partial[MAXCMDLINE], disp[AC_MAX][72];
+	const char	*cstart;
+	int		i, n, len, lineh, y0;
+	cvar_t		*cvar;
+	cmd_function_t	*cmd;
+	cmdalias_t	*alias;
+	extern cmd_function_t *cmd_functions;
+	extern cmdalias_t *cmd_alias;
+
+	if (!con_autocomplete.value)
+		return;
+	if (key_lines[edit_line][1] == 0)
+		return;
+
+	// the word being typed (cursor back to a separator / prompt)
+	cstart = key_lines[edit_line] + key_linepos - 1;
+	while (*cstart!=' ' && *cstart!='\"' && *cstart!=';' && cstart!=key_lines[edit_line])
+		cstart--;
+	cstart++;
+	len = (int)(key_lines[edit_line] + key_linepos - cstart);
+	if (len <= 0 || len >= MAXCMDLINE)
+		return;
+	memcpy (partial, cstart, len); partial[len] = 0;
+
+	n = 0;
+	for (cvar=Cvar_FindVarAfter("",CVAR_NONE); cvar && n<AC_MAX; cvar=cvar->next)
+		if (!Q_strncmp(partial, cvar->name, len))
+			{ q_snprintf(disp[n], sizeof(disp[0]), "%s \"%s\"", cvar->name, cvar->string); n++; }
+	for (cmd=cmd_functions; cmd && n<AC_MAX; cmd=cmd->next)
+		if (!Q_strncmp(partial, cmd->name, len))
+			{ q_snprintf(disp[n], sizeof(disp[0]), "%s", cmd->name); n++; }
+	for (alias=cmd_alias; alias && n<AC_MAX; alias=alias->next)
+		if (!Q_strncmp(partial, alias->name, len))
+			{ q_snprintf(disp[n], sizeof(disp[0]), "%s", alias->name); n++; }
+
+	if (n == 0)
+		return;
+
+	lineh = 8;
+	y0 = vid.conheight - 16 - (n*lineh) - 2;
+	Draw_FillByColor (8, y0, 71*8, n*lineh+2, 0, 0, 0, 200);
+	for (i = 0; i < n; i++)
+	{
+		const char *s = disp[i];
+		int x;
+		for (x = 0; s[x] && x < 70; x++)
+			Draw_Character ((x+1)<<3, y0 + 1 + i*lineh, s[x] | (i==0 ? 0x80 : 0));
+	}
 }
 
 /*
@@ -1189,6 +1262,7 @@ The typing input line at the bottom should only be drawn if typing is allowed
 
 // Naievil -- console toggle for menu
 int OSK_toggle;
+extern char osk_buffer[128];	// shared on-screen keyboard buffer (menu.c)
 qboolean console_enabled;
 void Con_DrawConsole (int lines, qboolean drawinput)
 {

@@ -166,8 +166,13 @@ int main(int argc, char *argv[])
 	Sys_Init();
 
 	int mem_mb = MemAvailable();
-	// leave at least 256 MB for stuff, or else it crashes on taxing maps in applet mode
-	parms.memsize = (mem_mb > 512) ? DEFAULT_MEMORY : DEFAULT_MEMORY / 2;
+	// scale heap to available memory; fixed 512MB thrashed the model cache on big maps
+	if (mem_mb > 1280)
+		parms.memsize = 1024 * 1024 * 1024;             // 1 GB (docked / full app)
+	else if (mem_mb > 768)
+		parms.memsize = (mem_mb - 256) * 1024 * 1024;   // most of it, 256 MB headroom
+	else
+		parms.memsize = DEFAULT_MEMORY / 2;             // 256 MB applet / low-mem
 
 	if (COM_CheckParm("-heapsize"))
 	{
@@ -235,6 +240,7 @@ int main(int argc, char *argv[])
 		time = newtime - oldtime;
 
 		Host_Frame (time);
+		IN_StopRumble ();	// end vibration once its duration elapses (else it buzzes forever)
 
 		if (time < sys_throttle.value && !cls.timedemo)
 			SDL_Delay(1);

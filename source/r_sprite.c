@@ -148,6 +148,16 @@ void R_DrawSpriteModel (entity_t *e)
 
 	glColor3f (1,1,1);
 
+	// NZP hardpoint beacon: draw THROUGH walls (no depth test) so the active point is
+	// always visible; grey/blue comes from the pre-tinted sprite model the QC swaps.
+	qboolean nzp_hardpoint = (e->effects & EF_HARDPOINT) != 0;
+	if (nzp_hardpoint) {
+		glDisable (GL_DEPTH_TEST);
+		// pulse the beacon's opacity so objective markers draw attention
+		float pulse = 0.5 + 0.5 * sin(cl.time * 5.0);
+		glColor4f (1, 1, 1, 0.35 + 0.65 * pulse);
+	}
+
 	GL_DisableMultitexture();
 
 	GL_Bind(frame->gltexture);
@@ -180,6 +190,11 @@ void R_DrawSpriteModel (entity_t *e)
 	glEnd ();
 	glDepthMask(GL_TRUE);
 	glDisable(GL_BLEND);
+
+	if (nzp_hardpoint) {
+		glEnable (GL_DEPTH_TEST);
+		glColor3f (1,1,1);
+	}
 
 	//johnfitz: offset decals
 	if (psprite->type == SPR_ORIENTED)

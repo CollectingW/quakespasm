@@ -123,6 +123,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	STAT_WEAPON2SKIN	18
 #define	STAT_WEAPON2FRAME	19
 #define STAT_CURRENTMAG2 	20
+#define STAT_HOLDING_GRENADE 21  // 1 when player holds primed grenade (trajectory preview)
+#define STAT_SKULLCHARGE     22  // Skull Ball charge meter 0-100 (0 = not charging / other modes)
 
 // stock defines
 //

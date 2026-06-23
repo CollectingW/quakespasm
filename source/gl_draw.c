@@ -47,6 +47,7 @@ float 	loading_cur_step;
 char	loading_name[32];
 float 	loading_num_step;
 int 	loading_step;
+int 	boot_camload;
 float 	loading_cur_step_bk;
 
 
@@ -702,38 +703,55 @@ Draw_ColoredStringScale
 Draw_ColoredString with scale parm
 ================
 */
+// one batched draw pass of a kerned string (outline or coloured text)
+static void Draw_StringScale_Pass (int x, int y, const char *str, float s)
+{
+	glBegin (GL_QUADS);
+	while (*str)
+	{
+		if (*str != 32) //don't waste verts on spaces
+			Draw_CharacterQuadScale (x, y, *str, s);
+
+		// Hooray for variable-spacing!
+		if (*str == ' ')
+			x += 4 * s;
+		else if ((int)*str < 33 || (int)*str > 126)
+			x += 8 * s;
+		else
+			x += (font_kerningamount[(int)(*str - 33)] + 1) * s;
+
+		str++;
+	}
+	glEnd ();
+}
+
 void Draw_ColoredStringScale (int x, int y, const char *str, float r, float g, float b, float a, float s)
 {
 	if (y <= -8)
 		return;			// totally off screen
 
 	glEnable (GL_BLEND);
-    glColor4f(r, g, b, a);
 	glDisable (GL_ALPHA_TEST);
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
 	GL_Bind (char_texture);
-	glBegin (GL_QUADS);
 
-	while (*str)
-	{
-		
-		if (*str != 32) //don't waste verts on spaces
-			Draw_CharacterQuadScale (x, y, *str, s);
-			
-		// Hooray for variable-spacing!
-		if (*str == ' ')
-			x += 4 * s;
-        else if ((int)*str < 33 || (int)*str > 126)
-            x += 8 * s;
-        else
-            x += (font_kerningamount[(int)(*str - 33)] + 1) * s;
+	// draw a black outline (8 directions) behind the text so it stays
+	// readable over busy/bright backgrounds -- a color change alone isn't enough.
+	int off = (int)s;
+	if (off < 1) off = 1;
+	glColor4f (0, 0, 0, a);
+	Draw_StringScale_Pass (x - off, y,       str, s);
+	Draw_StringScale_Pass (x + off, y,       str, s);
+	Draw_StringScale_Pass (x,       y - off, str, s);
+	Draw_StringScale_Pass (x,       y + off, str, s);
+	Draw_StringScale_Pass (x - off, y - off, str, s);
+	Draw_StringScale_Pass (x + off, y - off, str, s);
+	Draw_StringScale_Pass (x - off, y + off, str, s);
+	Draw_StringScale_Pass (x + off, y + off, str, s);
 
-		str++;
-		//x += 8*s;
-	}
-
-	glEnd ();
+	// coloured text on top
+	glColor4f (r, g, b, a);
+	Draw_StringScale_Pass (x, y, str, s);
 
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 	glEnable(GL_ALPHA_TEST);
@@ -1141,7 +1159,10 @@ void Draw_LoadingFill(void)
 	Draw_FillByColor (x - 2, y - 2, max_step + 4, size + 4, 69, 69, 69, 255);
 	Draw_FillByColor (x, y, loadsize, size, 0, 0, 0, 200);
 
-	switch(loading_step) {
+	extern int boot_camload;
+	if (boot_camload)
+		text = "Initializing..";	// keep the boot cam load on the one screen
+	else switch(loading_step) {
 		case 1: text = "Loading Models.."; break;
 		case 2: text = "Loading World.."; break;
 		case 3: text = "Executing Spawn Functions.."; break;

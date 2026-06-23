@@ -85,12 +85,12 @@ float		scr_con_current;
 float		scr_conlines;		// lines of console to display
 
 //johnfitz -- new cvars
-cvar_t		scr_menuscale = {"scr_menuscale", "1", CVAR_ARCHIVE};
-cvar_t		scr_sbarscale = {"scr_sbarscale", "1", CVAR_ARCHIVE};
+cvar_t		scr_menuscale = {"scr_menuscale", "2", CVAR_ARCHIVE};
+cvar_t		scr_sbarscale = {"scr_sbarscale", "2", CVAR_ARCHIVE};
 cvar_t		scr_sbaralpha = {"scr_sbaralpha", "0.75", CVAR_ARCHIVE};
 cvar_t		scr_conwidth = {"scr_conwidth", "0", CVAR_ARCHIVE};
-cvar_t		scr_conscale = {"scr_conscale", "1", CVAR_ARCHIVE};
-cvar_t		scr_crosshairscale = {"scr_crosshairscale", "1", CVAR_ARCHIVE};
+cvar_t		scr_conscale = {"scr_conscale", "2", CVAR_ARCHIVE};
+cvar_t		scr_crosshairscale = {"scr_crosshairscale", "2", CVAR_ARCHIVE};
 cvar_t		scr_showfps = {"scr_showfps", "0", CVAR_NONE};
 cvar_t		scr_clock = {"scr_clock", "0", CVAR_NONE};
 //johnfitz
@@ -99,7 +99,7 @@ cvar_t		scr_viewsize = {"viewsize","100", CVAR_ARCHIVE};
 cvar_t		scr_fov = {"fov","70",CVAR_NONE};	// 10 - 170
 cvar_t		scr_fov_adapt = {"fov_adapt","1",CVAR_ARCHIVE};
 cvar_t		scr_dynamic_fov = {"scr_dynamic_fov","1",CVAR_ARCHIVE}; //sB add dynamic FOV toggle
-cvar_t		scr_fov_viewmodel = {"r_viewmodel_fov","70"};
+cvar_t		scr_fov_viewmodel = {"r_viewmodel_fov","0"};	// 0 = auto-track world FOV (compressed, no stretch); >0 = fixed
 cvar_t		scr_loadscreen = {"scr_loadscreen","1", true}; //sB loading screens
 cvar_t		scr_conspeed = {"scr_conspeed","500",CVAR_ARCHIVE};
 cvar_t		scr_centertime = {"scr_centertime","2",CVAR_NONE};
@@ -134,6 +134,7 @@ vrect_t		scr_vrect;
 
 qboolean	scr_disabled_for_loading;
 qboolean	scr_drawloading;
+int			cam_loading;	// reloading the menu cam map: keep the menu drawn, hide the load
 float		scr_disabled_time;
 
 float		oldscreensize, oldfov;
@@ -376,10 +377,16 @@ void SCR_UsePrint (int type, int cost, int weapon)
 			strcpy(c, "");
 			button_pic_x = getTextWidth("Hold ", scale);
 			break;
+		case 25://box take + reject hint (owner only)
+			strcpy(w, cl.touchname);
+			strcpy(s, va("Hold  %s  for %s\n", GetUseButtonL(), w));
+			strcpy(c, "Press  Down  to share with team\n");
+			button_pic_x = getTextWidth("Hold ", scale);
+			break;
 		case 8://power
 			strcpy(s, "The Power must be Activated first\n");
 			strcpy(c, "");
-			button_pic_x = 100;
+			button_pic_x = -1;	// info-only: no button glyph
 			break;
 		case 9://perk
 			strcpy(s, va("Hold  %s  to buy %s\n", GetUseButtonL(), GetPerkName(weapon)));
@@ -402,10 +409,17 @@ void SCR_UsePrint (int type, int cost, int weapon)
 			button_pic_x = getTextWidth("Hold ", scale);
 			break;
 		case 13://revive
-			strcpy(s, va("Hold  %s  to Fix your Code.. :)\n", GetUseButtonL()));
+		{
+			// 'cost' carries the downed player's 1-based index; resolve their name
+			const char *rname = "Teammate";
+			int ridx = cost - 1;
+			if (ridx >= 0 && ridx < cl.maxclients && cl.scores && cl.scores[ridx].name[0])
+				rname = cl.scores[ridx].name;
+			strcpy(s, va("Hold  %s  to Revive %s\n", GetUseButtonL(), rname));
 			strcpy(c, "");
 			button_pic_x = getTextWidth("Hold ", scale);
 			break;
+		}
 		case 14://use teleporter (free)
 			strcpy(s, va("Hold  %s  to use Teleporter\n", GetUseButtonL()));
 			strcpy(c, "");
@@ -419,7 +433,7 @@ void SCR_UsePrint (int type, int cost, int weapon)
 		case 16://tp cooldown
 			strcpy(s, "Teleporter is cooling down\n");
 			strcpy(c, "");
-			button_pic_x = 100;
+			button_pic_x = -1;	// info-only: no button glyph
 			break;
 		case 17://link
 			strcpy(s, va("Hold  %s  to initiate link to pad\n", GetUseButtonL()));
@@ -429,7 +443,7 @@ void SCR_UsePrint (int type, int cost, int weapon)
 		case 18://no link
 			strcpy(s, "Link not active\n");
 			strcpy(c, "");
-			button_pic_x = 100;
+			button_pic_x = -1;	// info-only: no button glyph
 			break;
 		case 19://finish link
 			strcpy(s, va("Hold  %s  to link pad with core\n", GetUseButtonL()));
@@ -441,6 +455,11 @@ void SCR_UsePrint (int type, int cost, int weapon)
 			strcpy(c, va("[Cost: %i]\n", cost));
 			button_pic_x = getTextWidth("Hold ", scale);
 			break;
+		case 24://buyable MG42 turret
+			strcpy(s, va("Hold  %s  to Purchase Turret\n", GetUseButtonL()));
+			strcpy(c, va("[Cost: %i]\n", cost));
+			button_pic_x = getTextWidth("Hold ", scale);
+			break;
 		default:
 			Con_Printf ("No type defined in engine for useprint\n");
 			break;
@@ -448,7 +467,7 @@ void SCR_UsePrint (int type, int cost, int weapon)
 
 	strncpy (scr_usestring, va(s), sizeof(scr_usestring)-1);
 	strncpy (scr_usestring2, va(c), sizeof(scr_usestring2)-1);
-	scr_usetime_off = 0.1;
+	scr_usetime_off = 0.35;	// was 0.1: too tight for remote clients' jittery useprint refresh (flickered)
 }
 
 void SCR_DrawUseString (void)
@@ -486,6 +505,8 @@ void SCR_DrawUseString (void)
 
     GL_SetCanvas(CANVAS_DEFAULT);
 
+	if (button_pic_x >= 0)
+	{
 #ifdef VITA
 
 		Draw_Pic ((x + button_pic_x), y - 8, GetButtonIcon("+use"));
@@ -495,6 +516,7 @@ void SCR_DrawUseString (void)
 		Draw_Pic (x*2 + button_pic_x*scale + 26, y*0.8125, GetButtonIcon("+use"));
 
 #endif // VITA
+	}
 
 }
 
@@ -577,12 +599,28 @@ void SCR_DrawCenterString (void) //actually do the drawing
 	scr_erase_center = 0;
 	start = scr_centerstring;
 
+#if defined(__SWITCH__)
+	// Switch: scaled top-left notifications
+	int scale = 2;
+	x = 10;
+	y = 40;
+#elif defined(VITA)
+	int scale = 2;
+	if (scr_center_lines <= 4)
+		y = 200*0.35;
+	else
+		y = 48;
+	if (crosshair.value)
+		y -= 8;
+#else
+	int scale = 1;
 	if (scr_center_lines <= 4)
 		y = 200*0.35;	//johnfitz -- 320x200 coordinate system
 	else
 		y = 48;
 	if (crosshair.value)
 		y -= 8;
+#endif
 
 	do
 	{
@@ -591,29 +629,44 @@ void SCR_DrawCenterString (void) //actually do the drawing
 			if (start[l] == '\n' || !start[l])
 				break;
 
-#ifndef VITA
+#if defined(__SWITCH__)
+		// Switch: draw the line outlined via Draw_ColoredStringScale for readability
+		{
+			char linebuf[64];
+			int n = l;
+			qboolean stop = false;
+			if (n > remaining) { n = remaining; stop = true; }
+			if (n > 63) n = 63;
+			memcpy (linebuf, start, n);
+			linebuf[n] = 0;
+			Draw_ColoredStringScale (10, y, linebuf, 1, 1, 1, 1, (float)scale);
+			remaining -= l;
+			if (stop)
+				return;
+		}
+		(void)x; (void)j;
+#elif defined(VITA)
+		x = (320 - getTextWidth(start, scale))/2;
+		for (j=0 ; j<l ; j++)
+		{
+			Draw_CharacterScale(x, y, start[j], 2.0f);
 
-		int scale = 1;
+			// Variable-spacing
+			if (start[j] == ' ')
+				x += 4 * scale;
+			else if ((int)start[j] < 33 || (int)start[j] > 126)
+				x += 8 * scale;
+			else
+				x += (font_kerningamount[(int)(start[j] - 33)] + 1) * scale;
 
+			if (!remaining--)
+				return;
+		}
 #else
-
-		int scale = 2;
-
-#endif // VITA
-
 		x = (320 - getTextWidth(start, scale))/2; //johnfitz -- 320x200 coordinate system
 		for (j=0 ; j<l ; j++)
 		{
-
-#ifndef VITA
-
 			Draw_Character (x, y, start[j]);	//johnfitz -- stretch overlays
-
-#else
-
-			Draw_CharacterScale(x, y, start[j], 2.0f);
-
-#endif // VITA
 
 			// Hooray for variable-spacing!
 			if (start[j] == ' ')
@@ -626,6 +679,7 @@ void SCR_DrawCenterString (void) //actually do the drawing
 			if (!remaining--)
 				return;
 		}
+#endif
 
 		y += scale * 8;
 
@@ -745,7 +799,12 @@ static void SCR_CalcRefdef (void)
 	//johnfitz
 
 	// cypress -- hack to enable more standard fov values in quakespasm
-	r_refdef.fov_x = AdaptFovx(scr_fov.value - 15, vid.width, vid.height);
+	{	// clamp so a deep scope zoom can't drive fov below 1 ("Bad fov" crash)
+		float fovx = scr_fov.value - 15;
+		if (fovx < 10) fovx = 10;
+		if (fovx > 170) fovx = 170;
+		r_refdef.fov_x = AdaptFovx(fovx, vid.width, vid.height);
+	}
 	r_refdef.fov_y = CalcFovy (r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
 
 	scr_vrect = r_refdef.vrect;
@@ -1402,10 +1461,35 @@ void SCR_DrawLoadScreen (void)
 
 		Draw_ColoredStringScale(4, 8, loadnamespec, 255, 255, 0, 255, 4.0f);
 #else
-		Draw_FillByColor(0, 0, 1280, 29, 0, 0, 0, 150); 
+		Draw_FillByColor(0, 0, 1280, 29, 0, 0, 0, 150);
 		Draw_FillByColor(0, 331, 1280, 29, 0, 0, 0, 150);
 
 		Draw_ColoredStringScale(5, 7, loadnamespec, 255, 255, 0, 255, 2.0f);
+
+		// gamemode name, top-right, matching the map name's row/size
+		{
+			extern cvar_t sv_gamemode;
+			extern cvar_t sv_random_mix;
+			extern cvar_t sv_gamemode_mix;
+			extern const char* M_Gamemodes_GetModeName(int mode);
+			extern const char* M_MixComboName(int mask);
+
+			int   basemode = (int)sv_gamemode.value;
+			int   mix = (int)sv_gamemode_mix.value;
+			char  gmtext[64];
+
+			if (mix != 0)
+				q_snprintf(gmtext, sizeof(gmtext), "%s", M_MixComboName(mix));
+			// Layer "+ Random" when the Random mix is active over a non-Random base.
+			else if (sv_random_mix.value && basemode != 7)
+				q_snprintf(gmtext, sizeof(gmtext), "%s + Random", M_Gamemodes_GetModeName(basemode));
+			else
+				q_snprintf(gmtext, sizeof(gmtext), "%s", M_Gamemodes_GetModeName(basemode));
+
+			float gmscale = 2.0f;	// match loadnamespec (the map name)
+			int   gmx = (vid.width / 2) - (int)getTextWidth(gmtext, gmscale) - 6;
+			Draw_ColoredStringScale(gmx, 7, gmtext, 255, 255, 0, 255, gmscale);
+		}
 #endif // VITA
 		
 	}
@@ -1440,6 +1524,7 @@ extern qboolean croshhairmoving;
 //extern cvar_t cl_zoom;
 extern qpic_t *hitmark;
 double Hitmark_Time, crosshair_spread_time;
+qboolean Hitmark_IsKill;	// last hitmarker was a kill -> draw it red
 float cur_spread;
 float crosshair_offset_step;
 
@@ -1611,7 +1696,8 @@ extern qboolean paused_hack;
 extern qboolean crosshair_pulse_grenade;
 void SCR_DrawCrosshair (void)
 {
-	if (paused_hack == true || m_state == m_exit) {
+	extern cvar_t cam_tour;
+	if (paused_hack == true || m_state == m_exit || cam_tour.value) {
 		return;
 	}
 
@@ -1641,23 +1727,45 @@ void SCR_DrawCrosshair (void)
 		GL_SetCanvas(CANVAS_DEFAULT);
 		Draw_AlphaStretchPic (0, 0, vid.width, vid.height, 255, sniper_scope);
 	}
-   	if (Hitmark_Time > sv.time) {
+   	if (Hitmark_Time > cl.time) {
+        extern qboolean Hitmark_IsKill;
+        if (Hitmark_IsKill) {
+            // Draw_Pic inherits GL_REPLACE here (ignores glColor) -> force MODULATE so the tint applies.
+            glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glColor4f (1.0f, 0.15f, 0.12f, 1.0f);	// red marker on a kill
+        }
         Draw_Pic ((vid.width/2 - hitmark->width)/2,vid.height/2 + (vid.height/2 - hitmark->height)/2, hitmark);
+        if (Hitmark_IsKill) {
+            glColor4f (1.0f, 1.0f, 1.0f, 1.0f);
+            glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);	// restore for the rest of the HUD
+        }
    	}
 
 	// Make sure to do this after hitmark drawing.
-	if (cl.stats[STAT_ZOOM] == 2 || cl.stats[STAT_ZOOM] == 1) {
+	// In first-person ADS/scope, hide crosshair
+	// In third-person ADS, show a simple dot crosshair
+	extern cvar_t chase_active;
+	if (cl.stats[STAT_ZOOM] == 2) {
+		GL_SetCanvas(CANVAS_DEFAULT);
+		return;
+	}
+	if (cl.stats[STAT_ZOOM] == 1) {
+		// If in third-person mode, show a dot crosshair for ADS
+		if (chase_active.value) {
+			// Draw simple dot crosshair for third-person ADS
+			Draw_CharacterRGBA ((vid.width - 8)/4, (vid.height - 8)*3/4, '.', 255, col, col, 0.9);
+		}
 		GL_SetCanvas(CANVAS_DEFAULT);
 		return;
 	}
 
-	if (crosshair_spread_time > sv.time && crosshair_spread_time)
+	if (crosshair_spread_time > cl.time && crosshair_spread_time) // cl.time (sv.time is dead on networked clients)
     {
         cur_spread = cur_spread + 10;
 		if (cur_spread >= CrossHairMaxSpread())
 			cur_spread = CrossHairMaxSpread();
     }
-    else if (crosshair_spread_time < sv.time && crosshair_spread_time)
+    else if (crosshair_spread_time < cl.time && crosshair_spread_time)
     {
         cur_spread = cur_spread - 4;
 		if (cur_spread <= 0)
@@ -1966,6 +2074,7 @@ void SCR_EndLoadingPlaque (void)
 {
 	scr_disabled_for_loading = false;
 	Con_ClearNotify ();
+	TexMgr_EndMapLoad ();
 }
 
 //=============================================================================
@@ -2327,7 +2436,7 @@ void SCR_UpdateScreen (void)
 		Draw_FadeScreen ();
 		SCR_DrawNotifyString ();
 	}
-	else if (scr_drawloading) //loading
+	else if (scr_drawloading && !cam_loading) //loading
 	{
 		SCR_DrawLoading ();
 		// Sbar_Draw ();
@@ -2357,14 +2466,15 @@ void SCR_UpdateScreen (void)
 		SCR_DrawConsole ();
 		M_Draw ();
 		
-		if(scr_loadscreen.value)
+		if(scr_loadscreen.value && !cam_loading)
 		{
 			SCR_DrawLoadScreen();
 		}
 	}
 
-	Draw_LoadingFill();
-	
+	if (!cam_loading)
+		Draw_LoadingFill();
+
 	V_UpdateBlend (); //johnfitz -- V_UpdatePalette cleaned up and renamed
 	GLSLGamma_GammaCorrect ();
 	GL_EndRendering ();

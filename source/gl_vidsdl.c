@@ -128,6 +128,7 @@ PFNGLCLIENTACTIVETEXTUREARBPROC GL_ClientActiveTextureFunc = NULL; //ericw
 PFNGLBINDBUFFERARBPROC GL_BindBufferFunc = NULL; //ericw
 PFNGLBUFFERDATAARBPROC GL_BufferDataFunc = NULL; //ericw
 PFNGLBUFFERSUBDATAARBPROC GL_BufferSubDataFunc = NULL; //ericw
+PFNGLGETBUFFERSUBDATAPROC GL_GetBufferSubDataFunc = NULL; //VBO upload verify
 PFNGLDELETEBUFFERSARBPROC GL_DeleteBuffersFunc = NULL; //ericw
 PFNGLGENBUFFERSARBPROC GL_GenBuffersFunc = NULL; //ericw
 
@@ -154,6 +155,7 @@ QS_PFNGLUNIFORM1IPROC GL_Uniform1iFunc = NULL; //ericw
 QS_PFNGLUNIFORM1FPROC GL_Uniform1fFunc = NULL; //ericw
 QS_PFNGLUNIFORM3FPROC GL_Uniform3fFunc = NULL; //ericw
 QS_PFNGLUNIFORM4FPROC GL_Uniform4fFunc = NULL; //ericw
+QS_PFNGLUNIFORMMATRIX4FVPROC GL_UniformMatrix4fvFunc = NULL;
 
 //====================================
 
@@ -169,8 +171,8 @@ static cvar_t	vid_fsaa = {"vid_fsaa", "0", CVAR_ARCHIVE}; // QuakeSpasm
 static cvar_t	vid_desktopfullscreen = {"vid_desktopfullscreen", "1", CVAR_ARCHIVE}; // QuakeSpasm
 #else
 static cvar_t	vid_fullscreen = {"vid_fullscreen", "0", CVAR_ARCHIVE};	// QuakeSpasm, was "1"
-static cvar_t	vid_width = {"vid_width", "800", CVAR_ARCHIVE};		// QuakeSpasm, was 640
-static cvar_t	vid_height = {"vid_height", "600", CVAR_ARCHIVE};	// QuakeSpasm, was 480
+static cvar_t	vid_width = {"vid_width", "1280", CVAR_ARCHIVE};		// NZP Switch known-good
+static cvar_t	vid_height = {"vid_height", "720", CVAR_ARCHIVE};	// NZP Switch known-good
 static cvar_t	vid_bpp = {"vid_bpp", "16", CVAR_ARCHIVE};
 static cvar_t	vid_refreshrate = {"vid_refreshrate", "60", CVAR_ARCHIVE};
 static cvar_t	vid_vsync = {"vid_vsync", "0", CVAR_ARCHIVE};
@@ -886,6 +888,9 @@ static void VID_Restart (void)
 	TexMgr_DeleteTextureObjects ();
 	GLSLGamma_DeleteTexture ();
 	R_ScaleView_DeleteTexture ();
+#ifdef __SWITCH__
+	{ extern void R_SSAA_DeleteFBO (void); R_SSAA_DeleteFBO (); }	// reset SSAA FBO on vid restart
+#endif
 	R_DeleteShaders ();
 	GL_DeleteBModelVertexBuffer ();
 	GLMesh_DeleteVertexBuffers ();
@@ -1085,12 +1090,14 @@ static void GL_CheckExtensions (void)
 		GL_BindBufferFunc = (PFNGLBINDBUFFERARBPROC) vglGetProcAddress("glBindBufferARB");
 		GL_BufferDataFunc = (PFNGLBUFFERDATAARBPROC) vglGetProcAddress("glBufferDataARB");
 		GL_BufferSubDataFunc = (PFNGLBUFFERSUBDATAARBPROC) vglGetProcAddress("glBufferSubDataARB");
+		GL_GetBufferSubDataFunc = (PFNGLGETBUFFERSUBDATAPROC) vglGetProcAddress("glGetBufferSubDataARB");
 		GL_DeleteBuffersFunc = (PFNGLDELETEBUFFERSARBPROC) vglGetProcAddress("glDeleteBuffersARB");
 		GL_GenBuffersFunc = (PFNGLGENBUFFERSARBPROC) vglGetProcAddress("glGenBuffersARB");
 #else
 		GL_BindBufferFunc = (PFNGLBINDBUFFERARBPROC) SDL_GL_GetProcAddress("glBindBufferARB");
 		GL_BufferDataFunc = (PFNGLBUFFERDATAARBPROC) SDL_GL_GetProcAddress("glBufferDataARB");
 		GL_BufferSubDataFunc = (PFNGLBUFFERSUBDATAARBPROC) SDL_GL_GetProcAddress("glBufferSubDataARB");
+		GL_GetBufferSubDataFunc = (PFNGLGETBUFFERSUBDATAPROC) SDL_GL_GetProcAddress("glGetBufferSubDataARB");
 		GL_DeleteBuffersFunc = (PFNGLDELETEBUFFERSARBPROC) SDL_GL_GetProcAddress("glDeleteBuffersARB");
 		GL_GenBuffersFunc = (PFNGLGENBUFFERSARBPROC) SDL_GL_GetProcAddress("glGenBuffersARB");
 #endif
@@ -1263,6 +1270,12 @@ static void GL_CheckExtensions (void)
 
 	// texture_non_power_of_two
 	//
+	// enabling NPOT on citron corrupts geometry/textures (its resample path breaks),
+	// so keep it forced off on Switch. The lamp corruption is a separate issue.
+#ifdef __SWITCH__
+	gl_texture_NPOT = false;
+	Con_Printf("Switch build: forcing texture_non_power_of_two to false\n");
+#else
 	if (COM_CheckParm("-notexturenpot"))
 		Con_Warning ("texture_non_power_of_two disabled at command line\n");
 	else if (GL_ParseExtensionList(gl_extensions, "GL_ARB_texture_non_power_of_two"))
@@ -1274,6 +1287,7 @@ static void GL_CheckExtensions (void)
 	{
 		Con_Warning ("texture_non_power_of_two not supported\n");
 	}
+#endif
 	
 	// GLSL
 	//
@@ -1305,6 +1319,7 @@ static void GL_CheckExtensions (void)
 		GL_Uniform1fFunc = (QS_PFNGLUNIFORM1FPROC) vglGetProcAddress("glUniform1f");
 		GL_Uniform3fFunc = (QS_PFNGLUNIFORM3FPROC) vglGetProcAddress("glUniform3f");
 		GL_Uniform4fFunc = (QS_PFNGLUNIFORM4FPROC) vglGetProcAddress("glUniform4f");
+		GL_UniformMatrix4fvFunc = (QS_PFNGLUNIFORMMATRIX4FVPROC) vglGetProcAddress("glUniformMatrix4fv");
 #else
 		GL_CreateShaderFunc = (QS_PFNGLCREATESHADERPROC) SDL_GL_GetProcAddress("glCreateShader");
 		GL_DeleteShaderFunc = (QS_PFNGLDELETESHADERPROC) SDL_GL_GetProcAddress("glDeleteShader");
@@ -1329,6 +1344,7 @@ static void GL_CheckExtensions (void)
 		GL_Uniform1fFunc = (QS_PFNGLUNIFORM1FPROC) SDL_GL_GetProcAddress("glUniform1f");
 		GL_Uniform3fFunc = (QS_PFNGLUNIFORM3FPROC) SDL_GL_GetProcAddress("glUniform3f");
 		GL_Uniform4fFunc = (QS_PFNGLUNIFORM4FPROC) SDL_GL_GetProcAddress("glUniform4f");
+		GL_UniformMatrix4fvFunc = (QS_PFNGLUNIFORMMATRIX4FVPROC) SDL_GL_GetProcAddress("glUniformMatrix4fv");
 #endif
 		if (GL_CreateShaderFunc &&
 			GL_DeleteShaderFunc &&

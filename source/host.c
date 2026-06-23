@@ -167,8 +167,27 @@ void Host_Error (const char *error, ...)
 	if (sv.active)
 		Host_ShutdownServer (false);
 
-	//if (cls.state == ca_dedicated)
+	if (cls.state == ca_dedicated)
+	{
 		Sys_Error ("Host_Error: %s\n",string);	// dedicated servers exit
+	}
+	else
+	{
+		extern char m_return_reason[32];
+		q_strlcpy (m_return_reason, string, sizeof(m_return_reason));
+		int len = strlen(m_return_reason);
+		while (len > 0 && (m_return_reason[len - 1] == '\n' || m_return_reason[len - 1] == '\r'))
+		{
+			m_return_reason[len - 1] = 0;
+			len--;
+		}
+
+		key_dest = key_menu;
+		if (m_return_state != m_none)
+			m_state = m_return_state;
+		else
+			m_state = m_main;  // Go to main menu instead of lanconfig on error
+	}
 
 	CL_Disconnect ();
 	cls.demonum = -1;
@@ -427,7 +446,7 @@ void SV_DropClient (qboolean crash)
 		// this will set the body to a dead frame, among other things
 			saveSelf = pr_global_struct->self;
 			pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
-			PR_ExecuteProgram (pr_global_struct->ClientDisconnect);
+			PR_ExecuteProgramNamed (pr_global_struct->ClientDisconnect, "ClientDisconnect");
 			pr_global_struct->self = saveSelf;
 		}
 
@@ -547,6 +566,7 @@ extern int current_perk_order;
 extern double Hitmark_Time, crosshair_spread_time;
 extern float cur_spread;
 extern float crosshair_offset_step;
+extern float downed_filter_target, downed_filter_current;
 void Host_ClearMemory (void)
 {
 	Con_DPrintf ("Clearing memory\n");
@@ -574,6 +594,7 @@ void Host_ClearMemory (void)
 	crosshair_offset_step = 0;
 	cur_spread = 0;
 	Hitmark_Time = 0;
+	downed_filter_target = downed_filter_current = 0;
 }
 
 
@@ -664,8 +685,11 @@ void Host_ServerFrame (void)
 
 // move things around and think
 // always pause in single player if in console or menus
-	if (!sv.paused && (svs.maxclients > 1 || key_dest == key_game) )
-		SV_Physics ();
+	{
+		extern cvar_t cam_tour;
+		if (!sv.paused && (svs.maxclients > 1 || key_dest == key_game || cam_tour.value) )
+			SV_Physics ();
+	}
 
 //johnfitz -- devstats
 	if (cls.signon == SIGNONS)
@@ -721,6 +745,12 @@ void _Host_Frame (float time)
 
 // process console commands
 	Cbuf_Execute ();
+
+// drive the main-menu security-camera background
+	{
+		void CamMenu_Update (void);
+		CamMenu_Update ();
+	}
 
 	NET_Poll();
 
@@ -891,6 +921,13 @@ void Host_Init (void)
 	NET_Init ();
 	SV_Init ();
 
+	// load saved progression directly here (cvars registered, filesystem ready) --
+	// the deferred "loadprogress" Cbuf command wasn't reliable, resetting it each launch.
+	{
+		extern void LoadProgression (void);
+		LoadProgression ();
+	}
+
 	Con_Printf ("Exe: " __TIME__ " " __DATE__ "\n");
 	Con_Printf ("%4.1f megabyte heap\n", host_parms->memsize/ (1024*1024.0));
 
@@ -934,6 +971,14 @@ void Host_Init (void)
 	// johnfitz -- in case the vid mode was locked during vid_init, we can unlock it now.
 		// note: two leading newlines because the command buffer swallows one of them.
 		Cbuf_AddText ("\n\nvid_unlock\n");
+		// load saved progression AFTER the configs exec (so a stale config.cfg
+		// value can't override the immediately-persisted progress.dat).
+		Cbuf_AddText ("loadprogress\n");
+		// load the menu cam map now, under this same Initializing screen
+		{ extern int boot_camload; boot_camload = 1; }
+		Cbuf_AddText ("cam_tour 1\nmap ndu_cam\n");
+		Cbuf_Execute ();
+		{ extern int boot_camload; boot_camload = 0; }
 	}
 
 	if (cls.state == ca_dedicated)

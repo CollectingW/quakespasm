@@ -40,6 +40,8 @@ extern cvar_t cl_minpitch; //johnfitz -- variable pitch clamping
 
 cvar_t motioncam = {"motioncam", "0", CVAR_ARCHIVE};
 cvar_t gyromode = {"gyromode", "0", CVAR_ARCHIVE};
+cvar_t in_rumble = {"in_rumble", "1", CVAR_ARCHIVE};
+cvar_t in_rumble_scale = {"in_rumble_scale", "1.0", CVAR_ARCHIVE};
 cvar_t gyrosensx = {"gyrosensx", "1.0", CVAR_ARCHIVE};
 cvar_t gyrosensy = {"gyrosensy", "1.0", CVAR_ARCHIVE};
 
@@ -81,6 +83,7 @@ kbutton_t	in_mlook, in_klook;
 kbutton_t	in_left, in_right, in_forward, in_back;
 kbutton_t	in_lookup, in_lookdown, in_moveleft, in_moveright;
 kbutton_t	in_strafe, in_speed, in_use, in_jump, in_attack, in_grenade, in_reload, in_switch, in_knife, in_aim;
+kbutton_t	in_peekleft, in_peekright;	// tactical corner lean (held while aiming)
 kbutton_t	in_up, in_down;
 
 int			in_impulse;
@@ -195,6 +198,24 @@ void IN_KnifeDown (void) {KeyDown(&in_knife);}
 void IN_KnifeUp (void) {KeyUp(&in_knife);}
 void IN_AimDown (void) {KeyDown(&in_aim);}
 void IN_AimUp (void) {KeyUp(&in_aim);}
+void IN_PeekLeftDown (void) {KeyDown(&in_peekleft);}
+void IN_PeekLeftUp (void) {KeyUp(&in_peekleft);}
+void IN_PeekRightDown (void) {KeyDown(&in_peekright);}
+void IN_PeekRightUp (void) {KeyUp(&in_peekright);}
+
+// D-pad: corner-peek while aiming, else reload/switch (decided at press)
+static qboolean dpadleft_peek, dpadright_peek;
+void IN_DpadLeftDown (void)  { if (in_aim.state & 1) { dpadleft_peek = true; KeyDown(&in_peekleft); } else { dpadleft_peek = false; KeyDown(&in_reload); } }
+void IN_DpadLeftUp (void)    { if (dpadleft_peek) KeyUp(&in_peekleft); else KeyUp(&in_reload); }
+void IN_DpadRightDown (void) { if (in_aim.state & 1) { dpadright_peek = true; KeyDown(&in_peekright); } else { dpadright_peek = false; KeyDown(&in_switch); } }
+void IN_DpadRightUp (void)   { if (dpadright_peek) KeyUp(&in_peekright); else KeyUp(&in_switch); }
+
+// Skull Ball charge button (L bumper). Press = impulse 48 (start charge),
+// release = impulse 49 (fire with charge). Client-side flag drives the HUD meter.
+float	skull_charging;			// is the charge button currently held?
+double	skull_charge_start;		// cl.time the charge began
+void IN_SkullChargeDown (void) { in_impulse = 48; skull_charging = 1; skull_charge_start = cl.time; }
+void IN_SkullChargeUp   (void) { in_impulse = 49; skull_charging = 0; }
 
 void IN_Impulse (void) {in_impulse=Q_atoi(Cmd_Argv(1));}
 
@@ -673,6 +694,25 @@ void CL_SendMove (const usercmd_t *cmd)
 //
 	bits = 0;
 
+	// send per-client third-person aim state in button1 (1=right, 2=left); 0 when first-person forced
+	{
+		extern cvar_t chase_active, chase_side;
+		if (chase_active.value && !Chase_IsFirstPersonForced()) {
+			if (chase_side.value < 0)
+				bits |= 512;  // left shoulder  -> button1 == 2
+			else
+				bits |= 4;    // right shoulder -> button1 == 1
+		}
+	}
+
+	// corner-peek lean (first-person): bit 1024 flags a lean, bit 4/512 the direction
+	// -> server button1 5 (right)/6 (left) so the shot fires from the leaned eye.
+	{
+		extern int cl_peek_dir;
+		if (cl_peek_dir > 0)      bits |= 1024 | 4;
+		else if (cl_peek_dir < 0) bits |= 1024 | 512;
+	}
+
 	if (in_attack.state & 3 )
 		bits |= 1;
 	in_attack.state &= ~2;
@@ -681,7 +721,8 @@ void CL_SendMove (const usercmd_t *cmd)
 		bits |= 2;
 	in_jump.state &= ~2;
 
-	if (in_grenade.state & 3)
+	// Grenades only throw while NOT aiming (so peeking with the bumpers while ADS can't nade).
+	if ((in_grenade.state & 3) && !(in_aim.state & 1))
 		bits |= 8;
 	in_grenade.state &= ~2;
 
@@ -775,8 +816,18 @@ void CL_InitInput (void)
 	Cmd_AddCommand ("-reload", IN_ReloadUp);
 	Cmd_AddCommand ("+knife", IN_KnifeDown);
 	Cmd_AddCommand ("-knife", IN_KnifeUp);
+	Cmd_AddCommand ("+skullaction", IN_SkullChargeDown);
+	Cmd_AddCommand ("-skullaction", IN_SkullChargeUp);
 	Cmd_AddCommand ("+aim", IN_AimDown);
 	Cmd_AddCommand ("-aim", IN_AimUp);
+	Cmd_AddCommand ("+peekleft", IN_PeekLeftDown);
+	Cmd_AddCommand ("-peekleft", IN_PeekLeftUp);
+	Cmd_AddCommand ("+peekright", IN_PeekRightDown);
+	Cmd_AddCommand ("-peekright", IN_PeekRightUp);
+	Cmd_AddCommand ("+dpadleft", IN_DpadLeftDown);
+	Cmd_AddCommand ("-dpadleft", IN_DpadLeftUp);
+	Cmd_AddCommand ("+dpadright", IN_DpadRightDown);
+	Cmd_AddCommand ("-dpadright", IN_DpadRightUp);
 	Cmd_AddCommand ("impulse", IN_Impulse);
 	Cmd_AddCommand ("+klook", IN_KLookDown);
 	Cmd_AddCommand ("-klook", IN_KLookUp);
@@ -800,6 +851,9 @@ void CL_InitInput (void)
     hidStartSixAxisSensor(handles[3]);
 
 	hidInitializeVibrationDevices(VibrationDeviceHandles[0], 2, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld);
+	// A Joy-Con grip / dual controller reports as player No1 (not Handheld); init its
+	// actuators (JoyDual = L+R motors) or rumble silently goes nowhere when not handheld.
+	hidInitializeVibrationDevices(VibrationDeviceHandles[1], 2, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual);
 	memset(VibrationValues, 0, sizeof(VibrationValues));
     memset(&VibrationValue_stop, 0, sizeof(HidVibrationValue));
 

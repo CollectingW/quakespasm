@@ -263,6 +263,10 @@ void R_ClearParticles (void)
 	for (i=0 ;i<r_numparticles ; i++)
 		particles[i].next = &particles[i+1];
 	particles[r_numparticles-1].next = NULL;
+
+	// QMB shares this pool; release its per-type lists too or they keep nodes we just freed
+	extern void QMB_ResetParticleLists (void);
+	QMB_ResetParticleLists ();
 }
 
 /*

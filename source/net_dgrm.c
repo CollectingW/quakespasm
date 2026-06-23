@@ -878,17 +878,28 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 		return NULL;
 	net_message.cursize = len;
 
+	// log anything that reaches the host control socket: if a client searches and this
+	// never prints, the probe never arrived (LDN/routing problem, not a protocol one).
+	Con_SafePrintf("NETDBG: host control recv %d bytes from %s\n",
+		len, dfunc.AddrToString(&clientaddr));
+
 	MSG_BeginReading ();
 	control = BigLong(*((int *)net_message.data));
 	MSG_ReadLong();
 	if (control == -1)
 		return NULL;
 	if ((control & (~NETFLAG_LENGTH_MASK)) != (int)NETFLAG_CTL)
+	{
+		Con_SafePrintf("NETDBG: host dropped non-control packet from %s\n",
+			dfunc.AddrToString(&clientaddr));
 		return NULL;
+	}
 	if ((control & NETFLAG_LENGTH_MASK) != len)
 		return NULL;
 
 	command = MSG_ReadByte();
+	Con_SafePrintf("NETDBG: host control cmd=0x%02x from %s\n",
+		command, dfunc.AddrToString(&clientaddr));
 	if (command == CCREQ_SERVER_INFO)
 	{
 		if (strcmp(MSG_ReadString(), "QUAKE") != 0)
@@ -1145,9 +1156,15 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 			continue;
 		net_message.cursize = ret;
 
+		Con_SafePrintf("NETDBG: search reply %d bytes from %s\n",
+			ret, dfunc.AddrToString(&readaddr));
+
 		// don't answer our own query
 		if (dfunc.AddrCompare(&readaddr, &myaddr) >= 0)
+		{
+			Con_SafePrintf("NETDBG: ...ignored (matches my own address)\n");
 			continue;
+		}
 
 		// is the cache full?
 		if (hostCacheCount == HOSTCACHESIZE)
@@ -1163,8 +1180,15 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 		if ((control & NETFLAG_LENGTH_MASK) != ret)
 			continue;
 
-		if (MSG_ReadByte() != CCREP_SERVER_INFO)
-			continue;
+		{
+			int rep = MSG_ReadByte();
+			if (rep != CCREP_SERVER_INFO)
+			{
+				Con_SafePrintf("NETDBG: ...reply cmd=0x%02x, not CCREP_SERVER_INFO(0x83)\n", rep);
+				continue;
+			}
+			Con_SafePrintf("NETDBG: ...valid server-info, adding to list\n");
+		}
 
 		dfunc.GetAddrFromName(MSG_ReadString(), &readaddr);
 		// search the cache for this server

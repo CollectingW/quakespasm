@@ -64,6 +64,7 @@ typedef struct gltexture_s {
 	signed char			pants; //0-13 pants color, or -1 if never colormapped
 //used for rendering
 	int			visframe; //matches r_framecount if texture was bound this frame
+	int			map_used;
 } gltexture_t;
 
 #define	MAX_GLTEXTURES	2048
@@ -88,6 +89,8 @@ gltexture_t *TexMgr_NewTexture (void);
 void TexMgr_FreeTexture (gltexture_t *kill);
 void TexMgr_FreeTextures (unsigned int flags, unsigned int mask);
 void TexMgr_FreeTexturesForOwner (qmodel_t *owner);
+void TexMgr_BeginMapLoad (void);
+void TexMgr_EndMapLoad (void);
 void TexMgr_NewGame (void);
 void TexMgr_Init (void);
 void TexMgr_DeleteTextureObjects (void);

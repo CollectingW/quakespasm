@@ -153,6 +153,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define K_YBUTTON		250
 #define K_LTRIGGER		251
 #define K_RTRIGGER		252
+#define K_SELECT		253		// Switch minus/select -- opens co-op chat
 
 #define	MAX_KEYS		256
 

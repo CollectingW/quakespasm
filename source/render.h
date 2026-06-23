@@ -95,9 +95,19 @@ typedef struct entity_s
 	vec3_t					previousangles;	//johnfitz -- transform lerping
 	vec3_t					currentangles;	//johnfitz -- transform lerping
 
+	// per-object motion blur: captured each frame so the velocity pass can compute
+	// per-pixel screen motion. "cur" is this frame's transform; becomes "prev" next frame.
+	float					mblur_curmvp[16];	// this entity's model->clip matrix this frame
+	short					mblur_curpose1, mblur_curpose2;	// this frame's lerp poses
+	float					mblur_curblend;		// this frame's lerp blend
+	int						mblur_mvpframe;		// r_framecount when cur* was written (staleness/history check)
+
 	int                     z_head;
     int                     z_larm;
     int                     z_rarm;
+
+	vec3_t					lightdir_smooth;	// temporally smoothed world light dir (anti-jitter)
+	qboolean				lightdir_init;		// has lightdir_smooth been seeded yet?
 } entity_t;
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!

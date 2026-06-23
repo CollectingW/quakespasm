@@ -2841,6 +2841,46 @@ void Do_Pathfind (void) {
 	G_FLOAT(OFS_RETURN) = 0;
 }
 
+/*
+=================
+Waypoint_Reachable
+
+float Waypoint_Reachable (entity from, entity target)
+
+NZP: side-effect-free, door-aware reachability test. Returns 1 if the waypoint
+graph connects from's nearest waypoint to target's nearest waypoint, else 0.
+
+Unlike Do_Pathfind, this does NOT claim a zombie_list slot or store a path, so
+it is safe to call for spawn-point validation without corrupting the real
+zombies' pathfinding. Used by AI_SpawnReachable to stop zombies/dogs spawning
+in rooms whose door hasn't been bought (the engine waypoint graph reflects
+door state via Open_Waypoint/Close_Waypoint).
+
+Fails OPEN (returns 1) if either end has no nearby waypoint or the map has no
+waypoints, so it never breaks spawning on unwaypointed maps.
+=================
+*/
+void Waypoint_Reachable (void) {
+	int from_entnum   = G_EDICTNUM(OFS_PARM0);
+	int target_entnum = G_EDICTNUM(OFS_PARM1);
+
+	int start_wp = get_closest_waypoint(from_entnum);
+	int goal_wp  = get_closest_waypoint(target_entnum);
+
+	if (start_wp == -1 || goal_wp == -1) {
+		G_FLOAT(OFS_RETURN) = 1; // fail open -- don't break spawning
+		return;
+	}
+
+	// start sits on a closed door node -> sealed behind an unopened door
+	if (!waypoints[start_wp].open) {
+		G_FLOAT(OFS_RETURN) = 0;
+		return;
+	}
+
+	G_FLOAT(OFS_RETURN) = sv_way_pathfind(start_wp, goal_wp) ? 1 : 0;
+}
+
 //
 // Returns distance (squared) between point q and the line segment (a,b)
 //
@@ -3645,6 +3685,12 @@ void PF_ArgV  (void)
 	G_INT(OFS_RETURN) = PR_SetEngineString(s);
 }
 
+void PF_isonlava (void)
+{
+	extern qboolean R_PointOnLava (vec3_t p);
+	G_FLOAT(OFS_RETURN) = R_PointOnLava (G_VECTOR(OFS_PARM0)) ? 1.0f : 0.0f;
+}
+
 static builtin_t pr_builtin[] =
 {
 	PF_Fixme,
@@ -3738,7 +3784,7 @@ static builtin_t pr_builtin[] =
 	Get_First_Waypoint,			// #88
 	Close_Waypoint,				// #89
 	PF_tracebox,				// #90
-	NULL,						// #91
+	Waypoint_Reachable,			// #91 -- NZP side-effect-free reachability
 	NULL,						// #92
 	NULL,						// #93
 	NULL,						// #94
@@ -4158,6 +4204,7 @@ static builtin_t pr_builtin[] =
 	PF_LockViewmodel,			// #508
 	PF_Rumble,					// #509
 	PF_SetClientMode,			// #510
+	PF_isonlava,				// #511
 };
 
 builtin_t *pr_builtins = pr_builtin;

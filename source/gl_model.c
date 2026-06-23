@@ -219,12 +219,26 @@ void Mod_ClearAll (void)
 	int		i;
 	qmodel_t	*mod;
 
+	TexMgr_BeginMapLoad ();
+
+	// reload alias models fresh each map too (citron corrupts the cached GPU skins)
 	for (i=0 , mod=mod_known ; i<mod_numknown ; i++, mod++)
-		if (mod->type != mod_alias)
+	{
+		if (mod->type == mod_alias)
+		{
+			if (Cache_Check (&mod->cache))
+				Cache_Free (&mod->cache, false);
+			mod->needload = true;
+			// drop the stale VBO too (GLMesh_LoadVertexBuffer only rebuilds when meshvbo==0),
+			// else old verts persist against reloaded geometry -> vertex explosion.
+			if (mod->meshvbo) { GL_DeleteBuffersFunc (1, &mod->meshvbo); mod->meshvbo = 0; }
+			if (mod->meshindexesvbo) { GL_DeleteBuffersFunc (1, &mod->meshindexesvbo); mod->meshindexesvbo = 0; }
+		}
+		else
 		{
 			mod->needload = true;
-			TexMgr_FreeTexturesForOwner (mod); //johnfitz
 		}
+	}
 }
 
 void Mod_ResetAll (void)
@@ -708,6 +722,26 @@ void Mod_LoadTextures (lump_t *l)
         loading_cur_step++;
 		SCR_UpdateScreen();
 		//johnfitz
+	}
+
+	// NZP texture-corruption diagnostic: count brush textures with no gltexture (the
+	// checkerboard). Rising on reload = engine load bug; unchanged but corrupt = citron cache.
+	{
+		int tn, loaded = 0, failed = 0;
+		for (tn = 0; tn < nummiptex; tn++)
+		{
+			if (!loadmodel->textures[tn])
+				continue;
+			if (loadmodel->textures[tn]->gltexture)
+				loaded++;
+			else
+			{
+				failed++;
+				Con_Printf ("TEXDBG: FAILED tex '%s' %dx%d\n", loadmodel->textures[tn]->name,
+					loadmodel->textures[tn]->width, loadmodel->textures[tn]->height);
+			}
+		}
+		Con_Printf ("TEXDBG: %s brushtex loaded=%d failed=%d\n", loadmodel->name, loaded, failed);
 	}
 
 	//johnfitz -- last 2 slots in array should be filled with dummy textures
@@ -1219,6 +1253,9 @@ void Mod_PolyForUnlitSurface (msurface_t *fa)
 		VectorCopy (vec, poly->verts[i]);
 		poly->verts[i][3] = DotProduct(vec, fa->texinfo->vecs[0]) * texscale;
 		poly->verts[i][4] = DotProduct(vec, fa->texinfo->vecs[1]) * texscale;
+		poly->verts[i][5] = 0.0f;
+		poly->verts[i][6] = 0.0f;
+		poly->verts[i][7] = 0.0f;
 	}
 }
 
@@ -1374,6 +1411,7 @@ void Mod_LoadFaces (lump_t *l, qboolean bsp2)
 			Mod_PolyForUnlitSurface (out);
 			GL_SubdivideSurface (out);
 		}
+
 		else if (out->texinfo->texture->name[0] == '{') // ericw -- fence textures
 		{
 			out->flags |= SURF_DRAWFENCE;
@@ -2549,6 +2587,41 @@ qboolean model_is_zombie(char name[MAX_QPATH])
 	return false;
 }
 
+// citron renders embedded skins corrupt but file-loaded ones clean, so cache the indexed
+// skin as a .tga and load that (NULL on failure). tone_bright dims fullbright pixels to a glow.
+static gltexture_t *Mod_LoadSkinViaFile (qmodel_t *mod, const byte *idx, int w, int h,
+					 const unsigned int *pal, qboolean tone_bright,
+					 const char *suffix, int skinnum, unsigned int flags)
+{
+	char loadbase[MAX_QPATH], tganame[MAX_QPATH];
+	int fw = 0, fh = 0, p, npix = w * h;
+	byte *fdata;
+
+	q_snprintf (loadbase, sizeof(loadbase), "%s_%i%s", mod->name, skinnum, suffix);
+	q_snprintf (tganame, sizeof(tganame), "%s.tga", loadbase);
+	fdata = Image_LoadImage (loadbase, &fw, &fh);	// reuse a cached .tga if present
+	if (!fdata)
+	{
+		unsigned *rgba = (unsigned *) malloc (npix * 4);
+		if (!rgba)
+			return NULL;
+		for (p = 0; p < npix; p++)
+		{
+			if (tone_bright && idx[p] >= 224)
+				rgba[p] = 0xFF5A8296u;	// R150 G130 B90 A255 -- dim warm glass
+			else
+				rgba[p] = pal[idx[p]];
+		}
+		Image_WriteTGA (tganame, (byte *)rgba, w, h, 32, false);	// swaps rgba in place
+		free (rgba);
+		fdata = Image_LoadImage (loadbase, &fw, &fh);
+	}
+	if (!fdata)
+		return NULL;
+	return TexMgr_LoadImage (mod, tganame, fw, fh, SRC_RGBA, fdata, tganame, 0,
+				 flags | TEXPREF_OVERWRITE);
+}
+
 extern gltexture_t* zombie_skin;
 void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 {
@@ -2559,7 +2632,9 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 	daliasskininterval_t	*pinskinintervals;
 	char			fbr_mask_name[MAX_QPATH]; //johnfitz -- added for fullbright support
 	src_offset_t		offset; //johnfitz
-	unsigned int		texflags = TEXPREF_PAD;
+	// citron: alias skins must be resampled (not padded) AND mipmapped -- a non-mipmapped
+	// 64x64+ skin gets mangled by citron's block-linear decoder (the NDU lamp corruption).
+	unsigned int		texflags = TEXPREF_MIPMAP;
 
 	skin = (byte *)(pskintype + 1);
 
@@ -2583,10 +2658,126 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 			q_snprintf(filename, sizeof(filename), "models/ai/zfull.mdl_%i", j);
 			zomb_data = Image_LoadImage(filename, &zwidth, &zheight);
 			pheader->gltextures[j][0] = TexMgr_LoadImage(loadmodel, filename, zwidth, zheight,
-				SRC_RGBA, zomb_data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP);
+				SRC_RGBA, zomb_data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP|TEXPREF_OVERWRITE);
+
+			// glowing eyes: build a fullbright layer from the yellow eye pixels (rest black);
+			// the alias shader adds it emissively so the eyes glow through fog/darkness.
 			pheader->fbtextures[j][0] = NULL;
+			if (zomb_data && zwidth > 0 && zheight > 0) {
+				int npix = zwidth * zheight, p, x, y, it, nx, ny, xx, yy, m, v;
+				byte *inten = (byte *) malloc(npix);
+				byte *core  = (byte *) malloc(npix);
+				byte *tmp = (byte *) malloc(npix);
+				byte *glow = (byte *) malloc(npix * 4);
+				if (inten && core && tmp && glow) {
+					// 1) bright-yellow eye pixels start at full intensity
+					for (p = 0; p < npix; p++) {
+						byte cr = zomb_data[p*4+0], cg = zomb_data[p*4+1], cb = zomb_data[p*4+2];
+						inten[p] = (cr >= 195 && cg >= 100 && cb <= 105) ? 255 : 0;
+					}
+					// 2) morphological CLOSE radius 3 (3x dilate then 3x erode): seals broken/
+					// open eye rings and fills the pupil WITHOUT net outward growth, so even
+					// eyes whose bright ring has a gap end up solid.
+					for (it = 0; it < 3; it++) {
+						memcpy(tmp, inten, npix);
+						for (y = 0; y < zheight; y++)
+							for (x = 0; x < zwidth; x++) {
+								m = 0;
+								for (ny = -1; ny <= 1; ny++) for (nx = -1; nx <= 1; nx++) {
+									xx = x+nx; yy = y+ny;
+									if (xx<0||yy<0||xx>=zwidth||yy>=zheight) continue;
+									if (tmp[yy*zwidth+xx]) m = 255;
+								}
+								inten[y*zwidth+x] = m;
+							}
+					}
+					for (it = 0; it < 3; it++) {
+						memcpy(tmp, inten, npix);
+						for (y = 0; y < zheight; y++)
+							for (x = 0; x < zwidth; x++) {
+								m = 255;
+								for (ny = -1; ny <= 1; ny++) for (nx = -1; nx <= 1; nx++) {
+									xx = x+nx; yy = y+ny;
+									if (xx<0||yy<0||xx>=zwidth||yy>=zheight || !tmp[yy*zwidth+xx]) m = 0;
+								}
+								inten[y*zwidth+x] = m;
+							}
+					}
+					// fill enclosed dark pupils of any size: flood from the border; whatever
+					// it can't reach is an interior hole -> light it (the 1px close missed big ones).
+					{
+						int *stk = (int *) malloc(npix * sizeof(int));
+						if (stk) {
+							int sp2 = 0, q, qx, qy, nn;
+							memset(tmp, 0, npix);	// tmp = reached-from-outside
+							for (x = 0; x < zwidth; x++) {
+								if (!inten[x] && !tmp[x]) { tmp[x]=1; stk[sp2++]=x; }
+								nn = (zheight-1)*zwidth + x;
+								if (!inten[nn] && !tmp[nn]) { tmp[nn]=1; stk[sp2++]=nn; }
+							}
+							for (y = 0; y < zheight; y++) {
+								q = y*zwidth;
+								if (!inten[q] && !tmp[q]) { tmp[q]=1; stk[sp2++]=q; }
+								nn = y*zwidth + zwidth-1;
+								if (!inten[nn] && !tmp[nn]) { tmp[nn]=1; stk[sp2++]=nn; }
+							}
+							while (sp2 > 0) {
+								q = stk[--sp2]; qx = q % zwidth; qy = q / zwidth;
+								if (qx>0)         { nn=q-1;      if (!inten[nn]&&!tmp[nn]){tmp[nn]=1;stk[sp2++]=nn;} }
+								if (qx<zwidth-1)  { nn=q+1;      if (!inten[nn]&&!tmp[nn]){tmp[nn]=1;stk[sp2++]=nn;} }
+								if (qy>0)         { nn=q-zwidth; if (!inten[nn]&&!tmp[nn]){tmp[nn]=1;stk[sp2++]=nn;} }
+								if (qy<zheight-1) { nn=q+zwidth; if (!inten[nn]&&!tmp[nn]){tmp[nn]=1;stk[sp2++]=nn;} }
+							}
+							for (p = 0; p < npix; p++) if (!inten[p] && !tmp[p]) inten[p] = 255;
+							free(stk);
+						}
+					}
+					memcpy(core, inten, npix);
+					// 3) decay-diffuse outward for a soft radial falloff (core stays 255,
+					// each ring ~0.5x) so it reads as a glow instead of a blocky square.
+					for (it = 0; it < 2; it++) {
+						memcpy(tmp, inten, npix);
+						for (y = 0; y < zheight; y++)
+							for (x = 0; x < zwidth; x++) {
+								m = tmp[y*zwidth+x];
+								for (ny = -1; ny <= 1; ny++) for (nx = -1; nx <= 1; nx++) {
+									xx = x+nx; yy = y+ny;
+									if (xx<0||yy<0||xx>=zwidth||yy>=zheight) continue;
+									v = tmp[yy*zwidth+xx]; if (v>m) m=v;
+								}
+								v = (m * 95) / 255;
+								if (v > inten[y*zwidth+x]) inten[y*zwidth+x] = v;
+							}
+					}
+					// 4) colour: eye core uses the skin's own eye colour (filled pupil -> warm
+					// yellow); the thin halo is a dim warm tint so the edge blends in.
+					for (p = 0; p < npix; p++) {
+						int I = inten[p];
+						if (core[p]) {
+							int cr = zomb_data[p*4+0], cg = zomb_data[p*4+1], cb = zomb_data[p*4+2];
+							if (!(cr >= 195 && cg >= 100 && cb <= 105)) { cr = 255; cg = 190; cb = 40; }
+							glow[p*4+0] = cr; glow[p*4+1] = cg; glow[p*4+2] = cb;
+						} else {
+							glow[p*4+0] = (235*I)/255;
+							glow[p*4+1] = (165*I)/255;
+							glow[p*4+2] = (30*I)/255;
+						}
+						glow[p*4+3] = 255;
+					}
+					char glowname[MAX_QPATH];
+					q_snprintf(glowname, sizeof(glowname), "models/ai/zfull.mdl_%i_eyeglow", j);
+					pheader->fbtextures[j][0] = TexMgr_LoadImage(loadmodel, glowname, zwidth, zheight,
+						SRC_RGBA, glow, glowname, 0, texflags|TEXPREF_MIPMAP|TEXPREF_OVERWRITE);
+				}
+				if (glow) free(glow);
+				if (core) free(core);
+				if (tmp) free(tmp);
+				if (inten) free(inten);
+			}
+			pheader->spectextures[j][0] = NULL; // zombies have no specular
 			pheader->gltextures[j][3] = pheader->gltextures[j][2] = pheader->gltextures[j][1] = pheader->gltextures[j][0];
 			pheader->fbtextures[j][3] = pheader->fbtextures[j][2] = pheader->fbtextures[j][1] = pheader->fbtextures[j][0];
+			pheader->spectextures[j][3] = pheader->spectextures[j][2] = pheader->spectextures[j][1] = pheader->spectextures[j][0];
 		}
 		
 		pskintype = (daliasskintype_t *)((byte *)(pskintype+1) + size);
@@ -2617,8 +2808,10 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 			data = Image_LoadImage (filename, &fwidth, &fheight);
 
 			if (data) {
+				// TEXPREF_OVERWRITE: on reload, reuse the same GL texnum instead of leaking
+				// the old one (citron's Vulkan layer keeps it alive, corrupting later maps).
 				pheader->gltextures[i][0] = TexMgr_LoadImage (loadmodel, filename, fwidth, fheight,
-					SRC_RGBA, data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP );
+					SRC_RGBA, data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP|TEXPREF_OVERWRITE);
 
 				//now try to load glow/luma image from the same place
 				q_snprintf (filename2, sizeof(filename2), "%s_glow", filename);
@@ -2631,9 +2824,23 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 
 				if (data)
 					pheader->fbtextures[i][0] = TexMgr_LoadImage (loadmodel, filename2, fwidth, fheight,
-						SRC_RGBA, data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP );
+						SRC_RGBA, data, filename, 0, TEXPREF_ALPHA|texflags|TEXPREF_MIPMAP|TEXPREF_OVERWRITE);
 				else
 					pheader->fbtextures[i][0] = NULL;
+
+				// try to load a specular/gloss map: modelname_0_spec.tga / .png
+				{
+					char filename_spec[MAX_QPATH];
+					int sw = 0, sh = 0;
+					byte *sdata;
+					q_snprintf (filename_spec, sizeof(filename_spec), "%s_spec", filename);
+					sdata = Image_LoadImage (filename_spec, &sw, &sh);
+					if (sdata)
+						pheader->spectextures[i][0] = TexMgr_LoadImage (loadmodel, filename_spec, sw, sh,
+							SRC_RGBA, sdata, filename_spec, 0, texflags|TEXPREF_MIPMAP|TEXPREF_OVERWRITE);
+					else
+						pheader->spectextures[i][0] = NULL;
+				}
 
 			} else {
 
@@ -2654,10 +2861,25 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 						SRC_INDEXED, (byte *)(pskintype+1), loadmodel->name, offset, texflags);
 					pheader->fbtextures[i][0] = NULL;
 				}
+				// embedded skins can opt into gloss via an external "<model>_<i>_spec"
+				// marker file (presence flips the metallic shader on; content unused).
+				{
+					char filename_spec[MAX_QPATH];
+					int sw = 0, sh = 0;
+					byte *sdata;
+					q_snprintf (filename_spec, sizeof(filename_spec), "%s_%i_spec", loadmodel->name, i);
+					sdata = Image_LoadImage (filename_spec, &sw, &sh);
+					if (sdata)
+						pheader->spectextures[i][0] = TexMgr_LoadImage (loadmodel, filename_spec, sw, sh,
+							SRC_RGBA, sdata, filename_spec, 0, texflags|TEXPREF_MIPMAP);
+					else
+						pheader->spectextures[i][0] = NULL;
+				}
 			}
 
 			pheader->gltextures[i][3] = pheader->gltextures[i][2] = pheader->gltextures[i][1] = pheader->gltextures[i][0];
 			pheader->fbtextures[i][3] = pheader->fbtextures[i][2] = pheader->fbtextures[i][1] = pheader->fbtextures[i][0];
+			pheader->spectextures[i][3] = pheader->spectextures[i][2] = pheader->spectextures[i][1] = pheader->spectextures[i][0];
 			//johnfitz
 
 			pskintype = (daliasskintype_t *)((byte *)(pskintype+1) + size);
@@ -3041,7 +3263,7 @@ void * Mod_LoadSpriteFrame (void * pin, mspriteframe_t **ppframe, int framenum)
         pspriteframe->gltexture =
             TexMgr_LoadImage (loadmodel, name, width, height, SRC_INDEXED,
                       (byte *)(pinframe + 1), loadmodel->name, offset,
-                      TEXPREF_PAD | TEXPREF_ALPHA | TEXPREF_NOPICMIP); //johnfitz -- TexMgr
+                      TEXPREF_PAD | TEXPREF_ALPHA | TEXPREF_NOPICMIP | TEXPREF_MIPMAP); //johnfitz -- TexMgr
     }
 
 
