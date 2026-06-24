@@ -28,7 +28,7 @@ void HUD_Init (void);
 void HUD_NewMap (void);
 
 //achievement stuff
-#define MAX_ACHIEVEMENTS 29	// ... + Skull Ball (22-23) + Locked In/Deadeye (24) + Packed Or Nothing (25) + 3 defensive loadout perks (26-28)
+#define MAX_ACHIEVEMENTS 39	// ... + Skull Ball (22-23) + Locked In/Deadeye (24) + Packed Or Nothing (25) + 3 defensive loadout perks (26-28) + 10 new co-op/pickup achievements (29-38)
 typedef struct achievement_list_s
 {
     qpic_t      *img;

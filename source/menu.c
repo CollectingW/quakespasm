@@ -1392,6 +1392,26 @@ void Achievement_Init(void) {
       "Survive 50 zombie hits (heal back to 100%) -> unlocks Medical")
   ACH(28, "no_strings_attached", "No Strings Attached",
       "Get 100 thrall kills in Skull Ball -> unlocks Puppeteer")
+  ACH(29, "muchos_gracias", "Muchos Gracias",
+      "Revive another player in co-op")
+  ACH(30, "all_american_beef", "All American Beef",
+      "Dolphin Dive killing 5+ zombies in your radius")
+  ACH(31, "broke", "Broke.",
+      "Didn't buy the first door in co-op")
+  ACH(32, "the_carry", "The Carry",
+      "Bought the first door in co-op")
+  ACH(33, "something_stinks", "Something Stinks!",
+      "Be the first person to go down in co-op")
+  ACH(34, "revolutionary", "Revolutionary",
+      "Have all 3 weapons (Using Mule Kick Perk) pack-a-punched")
+  ACH(35, "hungry_for_more", "Hungry For More",
+      "Pick up a total of 25 Max Ammos")
+  ACH(36, "grunting_time", "Grunting Time",
+      "Pick up 25 Carpenters")
+  ACH(37, "wasteland", "Wasteland",
+      "Pick up 25 Nukes")
+  ACH(38, "reaper", "Reaper",
+      "Pick up 25 Insta-kills")
 
 #undef ACH
 
@@ -1468,6 +1488,26 @@ void Load_Achivements(void) {
         Cvar_SetValue("nzp_thrall_kills", 100);
         fixed = true;
       } // No Strings Attached -> Puppeteer
+      if (achievement_list[35].unlocked &&
+          Cvar_VariableValue("nzp_max_ammos") < 25) {
+        Cvar_SetValue("nzp_max_ammos", 25);
+        fixed = true;
+      } // Hungry For More
+      if (achievement_list[36].unlocked &&
+          Cvar_VariableValue("nzp_carpenters") < 25) {
+        Cvar_SetValue("nzp_carpenters", 25);
+        fixed = true;
+      } // Grunting Time
+      if (achievement_list[37].unlocked &&
+          Cvar_VariableValue("nzp_nukes") < 25) {
+        Cvar_SetValue("nzp_nukes", 25);
+        fixed = true;
+      } // Wasteland
+      if (achievement_list[38].unlocked &&
+          Cvar_VariableValue("nzp_instakills") < 25) {
+        Cvar_SetValue("nzp_instakills", 25);
+        fixed = true;
+      } // Reaper
       if (fixed)
         SaveProgression();
     }
@@ -1509,6 +1549,10 @@ void Achievements_ResetAll(void) {
   Cvar_SetValue("nzp_turret_kills", 0);
   Cvar_SetValue("nzp_survived_hits", 0);
   Cvar_SetValue("nzp_thrall_kills", 0);
+  Cvar_SetValue("nzp_max_ammos", 0);
+  Cvar_SetValue("nzp_carpenters", 0);
+  Cvar_SetValue("nzp_nukes", 0);
+  Cvar_SetValue("nzp_instakills", 0);
 }
 
 void M_Menu_Achievement_f(void) {
@@ -1665,6 +1709,41 @@ void M_Achievement_Draw(void) {
       sr = 1;
       sg = 0.85f;
       sb = 0.3f;
+    } else if (ci == 26) {
+      st = va("%i / 50", (int)Cvar_VariableValue("nzp_turret_kills"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 27) {
+      st = va("%i / 50", (int)Cvar_VariableValue("nzp_survived_hits"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 28) {
+      st = va("%i / 100", (int)Cvar_VariableValue("nzp_thrall_kills"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 35) {
+      st = va("%i / 25", (int)Cvar_VariableValue("nzp_max_ammos"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 36) {
+      st = va("%i / 25", (int)Cvar_VariableValue("nzp_carpenters"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 37) {
+      st = va("%i / 25", (int)Cvar_VariableValue("nzp_nukes"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
+    } else if (ci == 38) {
+      st = va("%i / 25", (int)Cvar_VariableValue("nzp_instakills"));
+      sr = 1;
+      sg = 0.85f;
+      sb = 0.3f;
     } else {
       st = "LOCKED";
       sr = 1.0f;
@@ -1676,7 +1755,7 @@ void M_Achievement_Draw(void) {
     // Live progress bar for the counter-based achievements.
     float frac = -1.0f;
     if (achievement_list[ci].unlocked &&
-        (ci == 14 || ci == 15 || ci == 17 || ci == 18))
+        (ci == 14 || ci == 15 || ci == 17 || ci == 18 || ci == 26 || ci == 27 || ci == 28 || ci == 35 || ci == 36 || ci == 37 || ci == 38))
       frac = 1.0f;
     else if (ci == 14)
       frac = Cvar_VariableValue("nzp_reloads") / 100.0f;
@@ -1686,6 +1765,20 @@ void M_Achievement_Draw(void) {
       frac = Cvar_VariableValue("nzp_knife_kills") / 100.0f;
     else if (ci == 18)
       frac = Cvar_VariableValue("nzp_hp_clean_rounds") / 10.0f;
+    else if (ci == 26)
+      frac = Cvar_VariableValue("nzp_turret_kills") / 50.0f;
+    else if (ci == 27)
+      frac = Cvar_VariableValue("nzp_survived_hits") / 50.0f;
+    else if (ci == 28)
+      frac = Cvar_VariableValue("nzp_thrall_kills") / 100.0f;
+    else if (ci == 35)
+      frac = Cvar_VariableValue("nzp_max_ammos") / 25.0f;
+    else if (ci == 36)
+      frac = Cvar_VariableValue("nzp_carpenters") / 25.0f;
+    else if (ci == 37)
+      frac = Cvar_VariableValue("nzp_nukes") / 25.0f;
+    else if (ci == 38)
+      frac = Cvar_VariableValue("nzp_instakills") / 25.0f;
     if (frac >= 0.0f) {
       if (frac > 1.0f)
         frac = 1.0f;
@@ -1873,6 +1966,16 @@ const char *Loadout_PerkDisplayName(int id) {
       return "Deadeye 2";
     return "Deadeye";
   }
+  if (id == 4) { // Puppeteer
+    lvl = (int)Cvar_VariableValue("nzp_puppet_level");
+    if (lvl >= 4)
+      return "Puppeteer Pro";
+    if (lvl == 3)
+      return "Puppeteer 3";
+    if (lvl == 2)
+      return "Puppeteer 2";
+    return "Puppeteer";
+  }
   return Loadout_PerkName(id);
 }
 
@@ -1885,7 +1988,16 @@ const char *Loadout_PerkDesc(int id) {
   case 3:
     return "Headshot kills award bonus points.";
   case 4:
-    return "Kills have a 1% chance to turn the zombie into a Thrall.";
+    {
+      int plvl = (int)Cvar_VariableValue("nzp_puppet_level");
+      if (plvl == 2)
+        return "Kills have a 3% chance to turn the zombie into a Thrall.";
+      if (plvl == 3)
+        return "Kills have a 4% chance to turn the zombie into a Thrall.";
+      if (plvl >= 4)
+        return "Kills have a 5% chance to turn the zombie into a Thrall.";
+      return "Kills have a 2% chance to turn the zombie into a Thrall.";
+    }
   case 5:
     return "Press D-Pad Down to place a mini-turret (5m Cooldown).";
   case 6:

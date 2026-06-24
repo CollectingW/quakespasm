@@ -54,7 +54,7 @@ STRIP ?= strip
 CPUFLAGS=
 LDFLAGS =
 DFLAGS ?=
-CFLAGS ?= -Wall -Wno-trigraphs
+CFLAGS ?= -Wall -Wno-trigraphs -std=gnu17
 CFLAGS += $(CPUFLAGS)
 ifneq ($(DEBUG),0)
 DFLAGS += -DDEBUG
