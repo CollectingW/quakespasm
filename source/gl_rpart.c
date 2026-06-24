@@ -1983,8 +1983,20 @@ qboolean R_PointOnLava (vec3_t p)
 	{
 		glpoly_t *poly = lava_surf[i]->polys;
 		int n = poly->numverts;
-		float dz = p[2] - poly->verts[0][2];
-		if (dz < 4.0f || dz > 56.0f)
+		float *v0, *v1, *v2, dz, nl;
+		vec3_t e1, e2, nrm;
+		if (n < 3)
+			continue;
+		// only horizontal floor lava can burn you -- skip lava walls/steep faces
+		v0 = poly->verts[0]; v1 = poly->verts[1]; v2 = poly->verts[2];
+		VectorSubtract (v1, v0, e1);
+		VectorSubtract (v2, v0, e2);
+		CrossProduct (e1, e2, nrm);
+		nl = sqrt (nrm[0]*nrm[0] + nrm[1]*nrm[1] + nrm[2]*nrm[2]);
+		if (nl < 0.001f || fabs(nrm[2]) / nl < 0.7f)
+			continue;
+		dz = p[2] - v0[2];
+		if (fabs(dz) > 12.0f)	// feet must be AT the lava plane, not just above it (stairs/platforms)
 			continue;
 		for (t = 0; t < n - 2; t++)
 		{
