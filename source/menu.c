@@ -1386,6 +1386,12 @@ void Achievement_Init(void) {
       "Get 50 headshot kills -> unlocks Deadeye")
   ACH(25, "packed_or_nothing", "Packed Or Nothing",
       "Get 1000 kills with Pack-a-Punched weapons")
+  ACH(26, "greased_up", "Greased Up",
+      "Get 50 turret kills on Kino -> unlocks Technician")
+  ACH(27, "callused_skin", "Callused Skin",
+      "Survive 50 zombie hits (heal back to 100%) -> unlocks Medical")
+  ACH(28, "no_strings_attached", "No Strings Attached",
+      "Get 100 thrall kills in Skull Ball -> unlocks Puppeteer")
 
 #undef ACH
 
@@ -1447,6 +1453,21 @@ void Load_Achivements(void) {
         Cvar_SetValue("nzp_hp_clean_rounds", 10);
         fixed = true;
       } // Hold the Point
+      if (achievement_list[26].unlocked &&
+          Cvar_VariableValue("nzp_turret_kills") < 50) {
+        Cvar_SetValue("nzp_turret_kills", 50);
+        fixed = true;
+      } // Greased Up -> Technician
+      if (achievement_list[27].unlocked &&
+          Cvar_VariableValue("nzp_survived_hits") < 50) {
+        Cvar_SetValue("nzp_survived_hits", 50);
+        fixed = true;
+      } // Callused Skin -> Medical
+      if (achievement_list[28].unlocked &&
+          Cvar_VariableValue("nzp_thrall_kills") < 100) {
+        Cvar_SetValue("nzp_thrall_kills", 100);
+        fixed = true;
+      } // No Strings Attached -> Puppeteer
       if (fixed)
         SaveProgression();
     }
@@ -1485,6 +1506,9 @@ void Achievements_ResetAll(void) {
   Cvar_SetValue("nzp_headshot_kills", 0);
   Cvar_SetValue("nzp_deadeye_level", 1);
   Cvar_SetValue("nzp_pap_kills", 0);
+  Cvar_SetValue("nzp_turret_kills", 0);
+  Cvar_SetValue("nzp_survived_hits", 0);
+  Cvar_SetValue("nzp_thrall_kills", 0);
 }
 
 void M_Menu_Achievement_f(void) {
@@ -1754,7 +1778,7 @@ extern cvar_t nzp_loadout1, nzp_loadout2, nzp_loadout3;
 extern cvar_t nzp_skin_m1911; // M1911 skin: 0=None, 1=Gold
 
 #define NUM_LOADOUT_SLOTS 3
-#define LOADOUT_PERK_COUNT 4 // 0 = None, 1 = Scavenger, 2 = Bartering King, 3 = Deadeye
+#define LOADOUT_PERK_COUNT 7 // 0 = None, 1 = Scavenger, 2 = Bartering King, 3 = Deadeye, 4 = Puppeteer, 5 = Technician, 6 = Medical
 
 #define LOADOUT_SKIN_ROW                                                       \
   NUM_LOADOUT_SLOTS // row index of the M1911 Skin selector
@@ -1805,6 +1829,12 @@ const char *Loadout_PerkName(int id) {
     return "Bartering King";
   case 3:
     return "Deadeye";
+  case 4:
+    return "Puppeteer";
+  case 5:
+    return "Technician";
+  case 6:
+    return "Medical";
   default:
     return "None";
   }
@@ -1854,6 +1884,12 @@ const char *Loadout_PerkDesc(int id) {
     return "Reduces the Mystery Box & wall-buy cost.";
   case 3:
     return "Headshot kills award bonus points.";
+  case 4:
+    return "Kills have a 1% chance to turn the zombie into a Thrall.";
+  case 5:
+    return "Press D-Pad Down to place a mini-turret (5m Cooldown).";
+  case 6:
+    return "Kills have a 5% chance to restore full health.";
   default:
     return "Empty slot. Left/Right to equip a Perk.";
   }
@@ -1868,6 +1904,12 @@ qboolean Loadout_PerkUnlocked(int id) {
     return achievement_list[15].unlocked; // Bartering King <- 10 box buys
   if (id == 3)
     return achievement_list[24].unlocked; // Deadeye <- Locked In (50 headshots)
+  if (id == 4)
+    return achievement_list[28].unlocked; // Puppeteer <- No Strings Attached
+  if (id == 5)
+    return achievement_list[26].unlocked; // Technician <- Greased Up
+  if (id == 6)
+    return achievement_list[27].unlocked; // Medical <- Callused Skin
   return false;
 }
 

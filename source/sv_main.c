@@ -52,6 +52,9 @@ cvar_t 	nzp_skin_m1911 = {"nzp_skin_m1911", "0", CVAR_NONE};	// equipped M1911 s
 cvar_t 	nzp_headshot_kills = {"nzp_headshot_kills", "0", CVAR_NONE};	// "Locked In" -> unlocks Deadeye at 50
 cvar_t 	nzp_deadeye_level = {"nzp_deadeye_level", "1", CVAR_NONE};	// Deadeye level 1-4
 cvar_t 	nzp_pap_kills = {"nzp_pap_kills", "0", CVAR_NONE};	// "Packed Or Nothing" -> 1000 Pack-a-Punch kills
+cvar_t 	nzp_turret_kills = {"nzp_turret_kills", "0", CVAR_NONE};	// "Sentry Duty" -> 50 turret kills on Kino
+cvar_t 	nzp_survived_hits = {"nzp_survived_hits", "0", CVAR_NONE};	// "Second Wind" -> survive 50 zombie hits (heal to 100%)
+cvar_t 	nzp_thrall_kills = {"nzp_thrall_kills", "0", CVAR_NONE};	// "Puppet Master" -> 100 thrall kills in Skull Ball
 
 static qboolean progression_loading = false;
 
@@ -60,24 +63,25 @@ void SaveProgression (void)
 	FILE *f = fopen (va("%s/progress.dat", com_gamedir), "w");
 	if (!f)
 		return;
-	fprintf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+	fprintf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
 		(int)nzp_reloads.value, (int)nzp_scav_level.value, (int)nzp_scav_mags.value,
 		(int)nzp_loadout1.value, (int)nzp_loadout2.value, (int)nzp_loadout3.value,
 		(int)nzp_box_buys.value, (int)nzp_barter_level.value,
 		(int)nzp_knife_kills.value, (int)nzp_hp_clean_rounds.value,
 		(int)nzp_skin_m1911.value,
-		(int)nzp_headshot_kills.value, (int)nzp_deadeye_level.value, (int)nzp_pap_kills.value);
+		(int)nzp_headshot_kills.value, (int)nzp_deadeye_level.value, (int)nzp_pap_kills.value,
+		(int)nzp_turret_kills.value, (int)nzp_survived_hits.value, (int)nzp_thrall_kills.value);
 	fclose (f);
 }
 
 void LoadProgression (void)
 {
 	// defaults cover older/shorter files (newer fields stay at default if absent)
-	int rl=0, sl=1, sm=0, l1=0, l2=0, l3=0, bb=0, bl=1, kk=0, hp=0, sk=0, he=0, de=1, pk=0;
+	int rl=0, sl=1, sm=0, l1=0, l2=0, l3=0, bb=0, bl=1, kk=0, hp=0, sk=0, he=0, de=1, pk=0, tk=0, sh=0, thk=0;
 	FILE *f = fopen (va("%s/progress.dat", com_gamedir), "r");
 	if (!f)
 		return;
-	fscanf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d", &rl,&sl,&sm,&l1,&l2,&l3,&bb,&bl,&kk,&hp,&sk,&he,&de,&pk);
+	fscanf (f, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", &rl,&sl,&sm,&l1,&l2,&l3,&bb,&bl,&kk,&hp,&sk,&he,&de,&pk,&tk,&sh,&thk);
 	fclose (f);
 	progression_loading = true;	// don't re-save while loading
 	Cvar_SetValue ("nzp_reloads", rl);
@@ -94,6 +98,9 @@ void LoadProgression (void)
 	Cvar_SetValue ("nzp_headshot_kills", he);
 	Cvar_SetValue ("nzp_deadeye_level", de);
 	Cvar_SetValue ("nzp_pap_kills", pk);
+	Cvar_SetValue ("nzp_turret_kills", tk);
+	Cvar_SetValue ("nzp_survived_hits", sh);
+	Cvar_SetValue ("nzp_thrall_kills", thk);
 	progression_loading = false;
 }
 
@@ -198,6 +205,9 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&nzp_headshot_kills);
 	Cvar_RegisterVariable (&nzp_deadeye_level);
 	Cvar_RegisterVariable (&nzp_pap_kills);
+	Cvar_RegisterVariable (&nzp_turret_kills);
+	Cvar_RegisterVariable (&nzp_survived_hits);
+	Cvar_RegisterVariable (&nzp_thrall_kills);
 	// persist progression IMMEDIATELY on any change (survives force-close)
 	Cvar_SetCallback (&nzp_reloads, Progression_Changed);
 	Cvar_SetCallback (&nzp_loadout1, Progression_Changed);
@@ -213,6 +223,9 @@ void SV_Init (void)
 	Cvar_SetCallback (&nzp_headshot_kills, Progression_Changed);
 	Cvar_SetCallback (&nzp_deadeye_level, Progression_Changed);
 	Cvar_SetCallback (&nzp_pap_kills, Progression_Changed);
+	Cvar_SetCallback (&nzp_turret_kills, Progression_Changed);
+	Cvar_SetCallback (&nzp_survived_hits, Progression_Changed);
+	Cvar_SetCallback (&nzp_thrall_kills, Progression_Changed);
 	Cmd_AddCommand ("loadprogress", LoadProgression);	// queued after configs in Host_Init
 	Cvar_RegisterVariable (&sv_difficulty);
 	Cvar_RegisterVariable (&sv_startround);
